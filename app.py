@@ -59,6 +59,18 @@ bolt_app = App(
     signing_secret=Config.SLACK_SIGNING_SECRET,
 )
 
+_token = Config.SLACK_BOT_TOKEN
+_signing = Config.SLACK_SIGNING_SECRET
+logger.info(
+    "Slack auth diagnostic: SLACK_BOT_TOKEN loaded=%s prefix=%s len=%s | "
+    "SLACK_SIGNING_SECRET loaded=%s len=%s",
+    bool(_token),
+    (_token[:5] if _token else "NONE"),
+    (len(_token) if _token else 0),
+    bool(_signing),
+    (len(_signing) if _signing else 0),
+)
+
 # ---------------------------------------------------------------------------
 # Services
 # ---------------------------------------------------------------------------
