@@ -20,6 +20,7 @@ import logging
 from flask import Flask, request, jsonify, render_template_string
 from slack_bolt import App
 from slack_bolt.adapter.flask import SlackRequestHandler
+from slack_sdk import WebClient
 
 from config import Config
 from models.models import init_db
@@ -30,6 +31,7 @@ from services.email_service import EmailService
 from services.reelstats_api import ReelStatsAPI
 from services.webhook_handler import WebhookHandler
 from services.scheduler_service import SchedulerService
+from services.slack_authorize import authorize as slack_authorize
 from services.slack_oauth import (
     InstallConfigError,
     InstallStateError,
@@ -54,30 +56,27 @@ init_db()
 # ---------------------------------------------------------------------------
 # Slack Bolt App
 # ---------------------------------------------------------------------------
+# Per-workspace token lookup (slack_installations table) with SLACK_BOT_TOKEN
+# fallback for the home workspace. Passing `authorize=` instead of `token=`
+# avoids slack-bolt's auto-OAuth path (triggered by SLACK_CLIENT_ID/SECRET in
+# the env) silently dropping a static token.
 bolt_app = App(
-    token=Config.SLACK_BOT_TOKEN,
     signing_secret=Config.SLACK_SIGNING_SECRET,
+    authorize=slack_authorize,
 )
 
-_token = Config.SLACK_BOT_TOKEN
-_signing = Config.SLACK_SIGNING_SECRET
-logger.info(
-    "Slack auth diagnostic: SLACK_BOT_TOKEN loaded=%s prefix=%s len=%s | "
-    "SLACK_SIGNING_SECRET loaded=%s len=%s",
-    bool(_token),
-    (_token[:5] if _token else "NONE"),
-    (len(_token) if _token else 0),
-    bool(_signing),
-    (len(_signing) if _signing else 0),
-)
+# Static WebClient for the home workspace, used by the scheduler and webhook
+# handler to post into the internal SLACK_CHANNEL_* channels. Bolt's
+# `bolt_app.client` carries no default token when `authorize=` is used.
+slack_client = WebClient(token=Config.SLACK_BOT_TOKEN)
 
 # ---------------------------------------------------------------------------
 # Services
 # ---------------------------------------------------------------------------
 email_service = EmailService()
 reelstats_api = ReelStatsAPI()
-scheduler_service = SchedulerService(bolt_app.client, email_service, reelstats_api)
-webhook_handler = WebhookHandler(bolt_app.client, scheduler_service)
+scheduler_service = SchedulerService(slack_client, email_service, reelstats_api)
+webhook_handler = WebhookHandler(slack_client, scheduler_service)
 
 # ---------------------------------------------------------------------------
 # Register Slack Handlers

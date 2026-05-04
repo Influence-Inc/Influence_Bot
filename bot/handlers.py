@@ -148,11 +148,11 @@ def register_event_handlers(app):
             )
 
     @app.event("team_join")
-    def handle_team_join(event, say):
+    def handle_team_join(event, client):
         """Welcome new team members."""
         user_id = event.get("user", {}).get("id", "")
         if user_id:
-            app.client.chat_postMessage(
+            client.chat_postMessage(
                 channel=user_id,
                 text=(
                     f"Welcome to the INFLUENCE team! :tada:\n\n"
