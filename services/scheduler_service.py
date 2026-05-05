@@ -14,6 +14,7 @@ from datetime import datetime, date, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 from sqlalchemy.exc import IntegrityError
 
 from config import Config
@@ -25,6 +26,7 @@ from models.models import (
     UploadFollowup,
     PaymentRecord,
 )
+from services.brand_routing import find_install_for_brand_name, install_brand_label
 from services.reelstats_api import ReelStatsAPI
 from services.email_service import EmailService, EmailSendResult
 from templates.slack_blocks import (
@@ -89,6 +91,37 @@ class SchedulerService:
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
             logger.info("Scheduler shut down")
+
+    def _post_to_brand_workspace(
+        self, brand_name: str, text: str, blocks: list[dict]
+    ) -> None:
+        """
+        Mirror an admin-channel notification to the brand's own workspace if
+        they've installed the bot via /slack/install. No-op for brands that
+        haven't installed (or whose install row has no channel/token yet).
+        Failures are logged and swallowed so a broken brand install never
+        blocks admin notifications.
+        """
+        install = find_install_for_brand_name(brand_name)
+        if install is None or not install.bot_token or not install.channel_id:
+            return
+        try:
+            WebClient(token=install.bot_token).chat_postMessage(
+                channel=install.channel_id,
+                text=text,
+                blocks=blocks,
+            )
+        except SlackApiError as e:
+            err = e.response.get("error") if e.response else str(e)
+            logger.warning(
+                "Brand-workspace post failed: brand=%s team_id=%s channel=%s error=%s",
+                install_brand_label(install), install.team_id, install.channel_id, err,
+            )
+        except Exception as e:
+            logger.warning(
+                "Brand-workspace post failed: brand=%s error=%s",
+                install_brand_label(install), e,
+            )
 
     def run_all_checks(self):
         """Fetch data from ReelStats API and run all notification checks."""
@@ -165,14 +198,16 @@ class SchedulerService:
             milestone_label=milestone_label,
             current_views=_format_views(current_views),
         )
+        text = (
+            f"Milestone! @{creator.get('username')} hit "
+            f"{milestone_label} views on {creator.get('campaign_name')}"
+        )
         self.client.chat_postMessage(
             channel=Config.SLACK_CHANNEL_MILESTONES,
-            text=(
-                f"Milestone! @{creator.get('username')} hit "
-                f"{milestone_label} views on {creator.get('campaign_name')}"
-            ),
+            text=text,
             blocks=blocks,
         )
+        self._post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
         logger.info(
             f"Milestone alert: @{creator.get('username')} hit "
             f"{milestone_label} views"
@@ -225,15 +260,17 @@ class SchedulerService:
                 brand_name=creator.get("brand_name", ""),
                 campaign_id=campaign_id,
             )
+            text = (
+                f"Deliverables complete! @{username} partnering with "
+                f"{creator.get('brand_name')} has completed their "
+                f"deliverables and is supposed to be paid."
+            )
             self.client.chat_postMessage(
                 channel=Config.SLACK_CHANNEL_PAYMENTS,
-                text=(
-                    f"Deliverables complete! @{username} partnering with "
-                    f"{creator.get('brand_name')} has completed their "
-                    f"deliverables and is supposed to be paid."
-                ),
+                text=text,
                 blocks=blocks,
             )
+            self._post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
             logger.info(f"Deliverable complete alert: @{username}")
         except Exception as e:
             logger.error(f"Error checking deliverables for @{username}: {e}")
@@ -318,11 +355,13 @@ class SchedulerService:
                 reminder_type=reminder_type,
                 days_left=days_left,
             )
+            text = f"Deadline reminder for @{username}: {reminder_type.replace('_', ' ')}"
             self.client.chat_postMessage(
                 channel=Config.SLACK_CHANNEL_DEADLINES,
-                text=f"Deadline reminder for @{username}: {reminder_type.replace('_', ' ')}",
+                text=text,
                 blocks=blocks,
             )
+            self._post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
 
             reminder = DeadlineReminder(
                 campaign_id=campaign_id,
@@ -406,15 +445,17 @@ class SchedulerService:
                 deadline=deadline_str,
                 days_left=days_left,
             )
+            text = (
+                f"Upload reminder: @{username} has posted "
+                f"{total_posted}/{min_videos} videos, "
+                f"{days_left} days until deadline"
+            )
             self.client.chat_postMessage(
                 channel=Config.SLACK_CHANNEL_UPLOADS,
-                text=(
-                    f"Upload reminder: @{username} has posted "
-                    f"{total_posted}/{min_videos} videos, "
-                    f"{days_left} days until deadline"
-                ),
+                text=text,
                 blocks=blocks,
             )
+            self._post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
 
             followup = UploadFollowup(
                 campaign_id=campaign_id,
