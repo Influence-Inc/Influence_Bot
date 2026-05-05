@@ -28,11 +28,6 @@ def authorize(
     user_id: Optional[str],
     **_: object,
 ) -> Optional[AuthorizeResult]:
-    logger.info(
-        "authorize called: enterprise_id=%s team_id=%s user_id=%s",
-        enterprise_id, team_id, user_id,
-    )
-
     if team_id:
         db = SessionLocal()
         try:
@@ -43,10 +38,6 @@ def authorize(
                 .first()
             )
             if install and install.bot_token:
-                logger.info(
-                    "authorize: using SlackInstallation row id=%s for team_id=%s",
-                    install.id, team_id,
-                )
                 return AuthorizeResult(
                     enterprise_id=enterprise_id,
                     team_id=install.team_id,
@@ -54,29 +45,22 @@ def authorize(
                     bot_user_id=install.bot_user_id,
                     bot_id=install.bot_user_id,
                 )
-            logger.info("authorize: no SlackInstallation row for team_id=%s", team_id)
         except Exception:
-            logger.exception("authorize: SlackInstallation lookup failed")
+            logger.exception("authorize: SlackInstallation lookup failed for team_id=%s", team_id)
         finally:
             db.close()
 
-    token = Config.SLACK_BOT_TOKEN
-    logger.info(
-        "authorize: SLACK_BOT_TOKEN fallback — present=%s prefix=%s len=%s",
-        bool(token),
-        (token[:5] if token else "NONE"),
-        (len(token) if token else 0),
-    )
-    if token:
+    if Config.SLACK_BOT_TOKEN:
         return AuthorizeResult(
             enterprise_id=enterprise_id,
             team_id=team_id,
-            bot_token=token,
+            bot_token=Config.SLACK_BOT_TOKEN,
         )
 
-    logger.error(
-        "No Slack token available for team_id=%s — install the app via "
-        "/slack/install or set SLACK_BOT_TOKEN.",
+    logger.warning(
+        "authorize returned None — no SlackInstallation for team_id=%s and "
+        "SLACK_BOT_TOKEN is not set. Install the app via /slack/install or "
+        "set SLACK_BOT_TOKEN.",
         team_id,
     )
     return None

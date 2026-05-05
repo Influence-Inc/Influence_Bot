@@ -5,6 +5,7 @@ Sends professional emails from jennifer@useinfluence.xyz via SMTP.
 
 import logging
 import smtplib
+import socket
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from enum import Enum
@@ -23,6 +24,23 @@ class EmailSendResult(str, Enum):
     FAILED = "failed"
 
 
+class _IPv4SMTP(smtplib.SMTP):
+    """SMTP that resolves the host to IPv4 only.
+
+    Railway containers expose IPv6 in DNS but have no IPv6 default route, so
+    ``socket.create_connection`` fails with ``[Errno 101] Network is
+    unreachable`` before ever falling back to IPv4. Restricting resolution to
+    AF_INET avoids that. ``self._host`` is left as the hostname so STARTTLS
+    SNI and certificate verification still work.
+    """
+
+    def _get_socket(self, host, port, timeout):
+        addrinfo = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        if not addrinfo:
+            raise OSError(f"No IPv4 address resolved for {host}")
+        return socket.create_connection(addrinfo[0][4], timeout, self.source_address)
+
+
 class EmailService:
     def __init__(self):
         self.host = Config.SMTP_HOST
@@ -33,6 +51,14 @@ class EmailService:
 
     def send_email(self, to_email: str, subject: str, body: str, cc: str = None) -> bool:
         """Send an email via SMTP."""
+        if not self.password:
+            logger.error(
+                "SMTP_PASSWORD is not set; cannot send email to %s. "
+                "Set SMTP_PASSWORD in Railway (use a Gmail App Password).",
+                to_email,
+            )
+            return False
+
         try:
             msg = MIMEMultipart()
             msg["From"] = f"{self.from_name} <{self.username}>"
@@ -47,7 +73,7 @@ class EmailService:
             if cc:
                 recipients.append(cc)
 
-            with smtplib.SMTP(self.host, self.port) as server:
+            with _IPv4SMTP(self.host, self.port, timeout=20) as server:
                 server.starttls()
                 server.login(self.username, self.password)
                 server.sendmail(self.username, recipients, msg.as_string())
