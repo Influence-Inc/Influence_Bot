@@ -141,66 +141,108 @@ class SchedulerService:
     # View Milestones
     # ------------------------------------------------------------------
     def check_milestones(self, creators: list[dict]):
-        """Check if any creator's totalViews crossed a milestone threshold."""
+        """Check if any individual post crossed a milestone threshold."""
         for creator in creators:
             self.check_milestones_for(creator)
 
     def check_milestones_for(self, creator: dict):
-        """Run milestone check for a single creator dict."""
-        db = SessionLocal()
-        try:
-            total_views = creator.get("totalViews", 0)
-            username = creator.get("username", "")
-            campaign_id = creator.get("campaign_id", "")
+        """
+        Run milestone check for each of the creator's posts. A milestone
+        fires when an individual video's view count crosses 250K, 500K,
+        1M, etc. — not the creator's combined total across posts.
+        """
+        username = creator.get("username", "")
+        campaign_id = creator.get("campaign_id", "")
+        videos = creator.get("videos") or []
+
+        for video in videos:
+            video_id = video.get("id") or ""
+            if not video_id:
+                continue
+            video_views = video.get("totalViews", 0) or 0
 
             for threshold in MILESTONE_THRESHOLDS:
-                if total_views < threshold:
+                if video_views < threshold:
                     continue
-
-                existing = (
-                    db.query(MilestoneAlert)
-                    .filter_by(
-                        campaign_id=campaign_id,
-                        creator_username=username,
-                        milestone_value=threshold,
-                    )
-                    .first()
+                self._record_and_notify_milestone(
+                    creator=creator,
+                    video=video,
+                    campaign_id=campaign_id,
+                    username=username,
+                    video_id=video_id,
+                    threshold=threshold,
+                    video_views=video_views,
                 )
-                if existing:
-                    continue
 
-                alert = MilestoneAlert(
+    def _record_and_notify_milestone(
+        self,
+        creator: dict,
+        video: dict,
+        campaign_id: str,
+        username: str,
+        video_id: str,
+        threshold: int,
+        video_views: int,
+    ):
+        db = SessionLocal()
+        try:
+            existing = (
+                db.query(MilestoneAlert)
+                .filter_by(
                     campaign_id=campaign_id,
                     creator_username=username,
+                    video_id=video_id,
                     milestone_value=threshold,
                 )
-                db.add(alert)
-                try:
-                    db.commit()
-                except IntegrityError:
-                    db.rollback()
-                    continue
+                .first()
+            )
+            if existing:
+                return
 
-                self._send_milestone_notification(creator, threshold, total_views)
+            alert = MilestoneAlert(
+                campaign_id=campaign_id,
+                creator_username=username,
+                video_id=video_id,
+                milestone_value=threshold,
+            )
+            db.add(alert)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                return
+
+            self._send_milestone_notification(creator, video, threshold, video_views)
         except Exception as e:
-            logger.error(f"Error checking milestones for @{creator.get('username')}: {e}")
+            logger.error(
+                f"Error recording milestone for @{username} "
+                f"video={video_id} threshold={threshold}: {e}"
+            )
         finally:
             db.close()
 
     def _send_milestone_notification(
-        self, creator: dict, milestone: int, current_views: int
+        self, creator: dict, video: dict, milestone: int, video_views: int
     ):
         milestone_label = _format_views(milestone)
+        username = creator.get("username", "")
+        campaign_name = creator.get("campaign_name", "")
+        video_title = video.get("title") or ""
+        video_link = _primary_video_link(video)
+
         blocks = build_milestone_blocks(
-            creator_username=creator.get("username", ""),
-            campaign_name=creator.get("campaign_name", ""),
+            creator_username=username,
+            campaign_name=campaign_name,
             brand_name=creator.get("brand_name", ""),
             milestone_label=milestone_label,
-            current_views=_format_views(current_views),
+            current_views=_format_views(video_views),
+            video_title=video_title,
+            video_link=video_link,
         )
         text = (
-            f"Milestone! @{creator.get('username')} hit "
-            f"{milestone_label} views on {creator.get('campaign_name')}"
+            f"Milestone! @{username}'s post "
+            f"{('“' + video_title + '” ') if video_title else ''}"
+            f"hit {milestone_label} views on {campaign_name}"
         )
         self.client.chat_postMessage(
             channel=Config.SLACK_CHANNEL_MILESTONES,
@@ -209,8 +251,8 @@ class SchedulerService:
         )
         self._post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
         logger.info(
-            f"Milestone alert: @{creator.get('username')} hit "
-            f"{milestone_label} views"
+            f"Milestone alert: @{username} post '{video_title}' "
+            f"hit {milestone_label} views ({video_views})"
         )
 
     # ------------------------------------------------------------------
@@ -532,3 +574,13 @@ def _format_views(count: int) -> str:
         val = count / 1_000
         return f"{val:.0f}K"
     return str(count)
+
+
+def _primary_video_link(video: dict) -> str:
+    """Pick the most useful link for a video, preferring Instagram → TikTok → YouTube."""
+    links = video.get("links") or {}
+    for platform in ("instagram", "tiktok", "youtube"):
+        url = links.get(platform)
+        if url:
+            return url
+    return ""
