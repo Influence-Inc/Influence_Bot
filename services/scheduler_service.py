@@ -329,6 +329,13 @@ class SchedulerService:
 
     def check_deadline_reminder_for(self, creator: dict):
         """Run deadline-reminder check for a single creator dict."""
+        # Skip creators who've already finished — deliverables.allComplete
+        # is set on the campaign page once views + videos are both met,
+        # at which point a deadline reminder is just noise.
+        deliverables = creator.get("deliverables", {}) or {}
+        if deliverables.get("allComplete") is True:
+            return
+
         deadline_str = creator.get("deadline")
         if not deadline_str:
             return
