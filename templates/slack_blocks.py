@@ -11,14 +11,29 @@ def build_milestone_blocks(
     brand_name: str,
     milestone_label: str,
     current_views: str,
+    video_title: str = "",
+    video_link: str = "",
 ) -> list[dict]:
-    """Notification when a creator crosses a view milestone."""
+    """
+    Notification when a single post crosses a view milestone (250K, 500K,
+    1M, 1.5M, ...). The view count refers to that one post, not the
+    creator's combined views across all their posts.
+    """
+    if video_link and video_title:
+        post_field = f"<{video_link}|{video_title}>"
+    elif video_link:
+        post_field = f"<{video_link}|View post>"
+    elif video_title:
+        post_field = video_title
+    else:
+        post_field = "—"
+
     return [
         {
             "type": "header",
             "text": {
                 "type": "plain_text",
-                "text": ":trophy: View Milestone Reached!",
+                "text": ":trophy: Post Milestone Reached!",
             },
         },
         {
@@ -27,6 +42,7 @@ def build_milestone_blocks(
                 {"type": "mrkdwn", "text": f"*Creator:*\n@{creator_username}"},
                 {"type": "mrkdwn", "text": f"*Campaign:*\n{campaign_name}"},
                 {"type": "mrkdwn", "text": f"*Brand:*\n{brand_name}"},
+                {"type": "mrkdwn", "text": f"*Post:*\n{post_field}"},
                 {"type": "mrkdwn", "text": f"*Milestone:*\n{milestone_label} views"},
             ],
         },
@@ -34,7 +50,7 @@ def build_milestone_blocks(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":chart_with_upwards_trend: Current total views: *{current_views}*",
+                "text": f":chart_with_upwards_trend: This post now has *{current_views}* views",
             },
         },
         {"type": "divider"},
