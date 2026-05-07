@@ -199,7 +199,7 @@ class WebhookHandler:
             for platform in ("instagram", "tiktok", "youtube"):
                 url = video.get(platform)
                 if url:
-                    links.append({"platform": platform.capitalize(), "url": url})
+                    links.append({"platform": platform, "url": url})
 
             if not links:
                 logger.warning(
