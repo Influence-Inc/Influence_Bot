@@ -4,54 +4,76 @@ Rich notifications for milestones, deliverables, deadlines, uploads,
 payment summaries, and webhook events (review/video links).
 """
 
+import re
+from datetime import date
+
+
+def _format_upload_date(iso_date: str) -> str:
+    """Render an ISO date string (YYYY-MM-DD) as 'Month D, YYYY'."""
+    if not iso_date:
+        return ""
+    try:
+        d = date.fromisoformat(iso_date)
+    except ValueError:
+        return iso_date
+    return f"{d.strftime('%B')} {d.day}, {d.year}"
+
+
+def _ordinal(n: int) -> str:
+    """1 -> '1st', 2 -> '2nd', 11 -> '11th', etc."""
+    if 10 <= (n % 100) <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _video_ordinal_label(video_title: str) -> str:
+    """
+    Derive an ordinal label like '1st video' from a 'Post N' title.
+    Falls back to the title itself, or 'video' if neither is usable.
+    """
+    if video_title:
+        m = re.search(r"(\d+)", video_title)
+        if m:
+            return f"{_ordinal(int(m.group(1)))} video"
+        return video_title
+    return "video"
+
 
 def build_milestone_blocks(
     creator_username: str,
     campaign_name: str,
     brand_name: str,
     milestone_label: str,
-    current_views: str,
-    video_title: str = "",
+    first_posted: str = "",
     video_link: str = "",
+    include_brand: bool = True,
 ) -> list[dict]:
     """
     Notification when a single post crosses a view milestone (250K, 500K,
     1M, 1.5M, ...). The view count refers to that one post, not the
     creator's combined views across all their posts.
+
+    `include_brand=True` for the admin channel, `False` for the brand's
+    own workspace (where the brand line is redundant).
     """
-    if video_link and video_title:
-        post_field = f"<{video_link}|{video_title}>"
-    elif video_link:
-        post_field = f"<{video_link}|View post>"
-    elif video_title:
-        post_field = video_title
-    else:
-        post_field = "—"
+    lines = [f":rocket: *Breakout video alert - {milestone_label} views!*", ""]
+    if include_brand and brand_name:
+        lines.append(f"*Brand:* {brand_name}")
+    if campaign_name:
+        lines.append(f"*Campaign:* {campaign_name}")
+    if creator_username:
+        lines.append(f"*Creator:* @{creator_username}")
+    if first_posted:
+        lines.append(f"*1st Posted:* {first_posted}")
+    if video_link:
+        lines.append(f"*Link:* {video_link}")
 
     return [
         {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": ":trophy: Post Milestone Reached!",
-            },
-        },
-        {
             "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Creator:*\n@{creator_username}"},
-                {"type": "mrkdwn", "text": f"*Campaign:*\n{campaign_name}"},
-                {"type": "mrkdwn", "text": f"*Brand:*\n{brand_name}"},
-                {"type": "mrkdwn", "text": f"*Post:*\n{post_field}"},
-                {"type": "mrkdwn", "text": f"*Milestone:*\n{milestone_label} views"},
-            ],
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f":chart_with_upwards_trend: This post now has *{current_views}* views",
-            },
+            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
         },
         {"type": "divider"},
     ]
@@ -259,29 +281,22 @@ def build_review_submitted_blocks(
     review_id: int | None = None,
 ) -> list[dict]:
     """Webhook event: creator submitted a video for review."""
-    text_parts = [
-        f"*@{creator_username}* submitted a video for review "
-        f"on *{campaign_name}* ({brand_name})."
-    ]
+    body_lines = [":video_camera: *Content to be reviewed*", ""]
+    if creator_username:
+        body_lines.append("*Instagram username*")
+        body_lines.append(f"@{creator_username}")
+        body_lines.append("")
     if video_link:
-        text_parts.append(f":link: <{video_link}|Watch Video>")
+        body_lines.append("*Link*")
+        body_lines.append(video_link)
     if notes:
-        text_parts.append(f":memo: *Notes:* {notes}")
+        body_lines.append("")
+        body_lines.append(f":memo: *Notes:* {notes}")
 
     blocks: list[dict] = [
         {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": ":film_frames: Video Submitted for Review",
-            },
-        },
-        {
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "\n".join(text_parts),
-            },
+            "text": {"type": "mrkdwn", "text": "\n".join(body_lines).rstrip()},
         },
     ]
 
@@ -312,6 +327,13 @@ def build_review_submitted_blocks(
     return blocks
 
 
+_PLATFORM_LABELS = {
+    "instagram": "Reels",
+    "tiktok": "Tiktok",
+    "youtube": "Shorts",
+}
+
+
 def build_video_links_submitted_blocks(
     creator_username: str,
     campaign_name: str,
@@ -319,34 +341,36 @@ def build_video_links_submitted_blocks(
     video_title: str,
     links: list[dict],
 ) -> list[dict]:
-    """Webhook event: creator submitted video links (posted content)."""
-    link_lines = []
-    for link in links:
-        link_lines.append(f"• *{link['platform']}:* <{link['url']}|View>")
+    """
+    Webhook event: creator submitted video links (posted content).
 
-    body = (
-        f"*@{creator_username}* submitted video links "
-        f"for *{campaign_name}* ({brand_name})."
-    )
-    if video_title:
-        body += f"\n:clapper: *Title:* {video_title}"
-    if link_lines:
-        body += "\n\n" + "\n".join(link_lines)
+    `links` is a list of dicts with keys `platform` (raw key, e.g.
+    'instagram', 'tiktok', 'youtube') and `url`.
+    """
+    body_lines = [":tada: *Content posted*", ""]
+    if creator_username:
+        body_lines.append("*Instagram username*")
+        body_lines.append(f"@{creator_username}")
+        body_lines.append("")
+
+    body_lines.append(f"*{_video_ordinal_label(video_title)}*")
+
+    for link in links:
+        url = link.get("url")
+        if not url:
+            continue
+        platform_key = (link.get("platform") or "").lower()
+        label = _PLATFORM_LABELS.get(platform_key) or (
+            link.get("platform") or platform_key or "Link"
+        )
+        body_lines.append("")
+        body_lines.append(f"*{label}*")
+        body_lines.append(url)
 
     return [
         {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": ":link: Video Links Submitted",
-            },
-        },
-        {
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": body,
-            },
+            "text": {"type": "mrkdwn", "text": "\n".join(body_lines).rstrip()},
         },
         {"type": "divider"},
     ]

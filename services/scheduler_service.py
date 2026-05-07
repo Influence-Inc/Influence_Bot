@@ -30,6 +30,7 @@ from services.brand_routing import find_install_for_brand_name, install_brand_la
 from services.reelstats_api import ReelStatsAPI
 from services.email_service import EmailService, EmailSendResult
 from templates.slack_blocks import (
+    _format_upload_date,
     build_milestone_blocks,
     build_deliverable_complete_blocks,
     build_deadline_reminder_blocks,
@@ -227,32 +228,38 @@ class SchedulerService:
         milestone_label = _format_views(milestone)
         username = creator.get("username", "")
         campaign_name = creator.get("campaign_name", "")
-        video_title = video.get("title") or ""
+        brand_name = creator.get("brand_name", "")
         video_link = _primary_video_link(video)
+        first_posted = _format_upload_date(video.get("uploadDate") or "")
 
-        blocks = build_milestone_blocks(
+        admin_blocks = build_milestone_blocks(
             creator_username=username,
             campaign_name=campaign_name,
-            brand_name=creator.get("brand_name", ""),
+            brand_name=brand_name,
             milestone_label=milestone_label,
-            current_views=_format_views(video_views),
-            video_title=video_title,
+            first_posted=first_posted,
             video_link=video_link,
+            include_brand=True,
         )
-        text = (
-            f"Milestone! @{username}'s post "
-            f"{('“' + video_title + '” ') if video_title else ''}"
-            f"hit {milestone_label} views on {campaign_name}"
+        brand_blocks = build_milestone_blocks(
+            creator_username=username,
+            campaign_name=campaign_name,
+            brand_name=brand_name,
+            milestone_label=milestone_label,
+            first_posted=first_posted,
+            video_link=video_link,
+            include_brand=False,
         )
+        text = f"Breakout video alert — @{username} hit {milestone_label} views on {campaign_name}"
         self.client.chat_postMessage(
             channel=Config.SLACK_CHANNEL_MILESTONES,
             text=text,
-            blocks=blocks,
+            blocks=admin_blocks,
         )
-        self._post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
+        self._post_to_brand_workspace(brand_name, text, brand_blocks)
         logger.info(
-            f"Milestone alert: @{username} post '{video_title}' "
-            f"hit {milestone_label} views ({video_views})"
+            f"Milestone alert: @{username} hit {milestone_label} views "
+            f"({video_views}) on video={video.get('id')}"
         )
 
     # ------------------------------------------------------------------
@@ -329,6 +336,13 @@ class SchedulerService:
 
     def check_deadline_reminder_for(self, creator: dict):
         """Run deadline-reminder check for a single creator dict."""
+        # Skip creators who've already finished — deliverables.allComplete
+        # is set on the campaign page once views + videos are both met,
+        # at which point a deadline reminder is just noise.
+        deliverables = creator.get("deliverables", {}) or {}
+        if deliverables.get("allComplete") is True:
+            return
+
         deadline_str = creator.get("deadline")
         if not deadline_str:
             return
