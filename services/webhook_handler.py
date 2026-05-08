@@ -19,6 +19,7 @@ from slack_sdk.errors import SlackApiError
 
 from config import Config
 from models.models import ReviewSubmission, SessionLocal
+from services.brand_routing import post_to_brand_workspace
 from templates.slack_blocks import (
     build_review_submitted_blocks,
     build_video_links_submitted_blocks,
@@ -145,7 +146,7 @@ class WebhookHandler:
             finally:
                 db.close()
 
-            blocks = build_review_submitted_blocks(
+            admin_blocks = build_review_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
                 brand_name=brand_name,
@@ -153,11 +154,12 @@ class WebhookHandler:
                 notes=notes,
                 review_id=review_id,
             )
+            text = f"New review submitted by @{username} for {campaign_name}"
 
             ok, resolved_channel, ts = self._post_to_slack(
                 channel=Config.SLACK_CHANNEL_REVIEWS,
-                text=f"New review submitted by @{username} for {campaign_name}",
-                blocks=blocks,
+                text=text,
+                blocks=admin_blocks,
                 event_label="review_submitted",
             )
 
@@ -171,6 +173,19 @@ class WebhookHandler:
                         db.commit()
                 finally:
                     db.close()
+
+            # Mirror to the brand's own workspace (no Approve/Request-Changes
+            # buttons there — review decisions are owned by the admin channel
+            # so cross-workspace state can't drift).
+            brand_blocks = build_review_submitted_blocks(
+                creator_username=username,
+                campaign_name=campaign_name,
+                brand_name=brand_name,
+                video_link=video_link,
+                notes=notes,
+                review_id=None,
+            )
+            post_to_brand_workspace(brand_name, text, brand_blocks)
 
             if ok:
                 logger.info(
@@ -207,20 +222,26 @@ class WebhookHandler:
                     f"{campaign_name} contains no platform URLs"
                 )
 
+            brand_name = campaign.get("brandName") or campaign.get("brand_name") or ""
             blocks = build_video_links_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
-                brand_name=campaign.get("brandName") or campaign.get("brand_name") or "",
+                brand_name=brand_name,
                 video_title=video.get("title", ""),
                 links=links,
             )
+            text = f"Video links submitted by @{username} for {campaign_name}"
 
             ok, _channel, _ts = self._post_to_slack(
                 channel=Config.SLACK_CHANNEL_UPLOADS,
-                text=f"Video links submitted by @{username} for {campaign_name}",
+                text=text,
                 blocks=blocks,
                 event_label="video_links_submitted",
             )
+
+            # Mirror to the brand's own workspace.
+            post_to_brand_workspace(brand_name, text, blocks)
+
             if ok:
                 logger.info(
                     f"Video links submitted notification sent to "
