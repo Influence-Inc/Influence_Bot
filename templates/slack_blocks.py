@@ -279,9 +279,24 @@ def build_review_submitted_blocks(
     video_link: str,
     notes: str,
     review_id: int | None = None,
+    show_meta: bool = False,
 ) -> list[dict]:
-    """Webhook event: creator submitted a video for review."""
+    """
+    Webhook event: creator submitted a video for review.
+
+    `show_meta=True` adds Brand + Campaign rows — used on the admin
+    side where one channel sees content from many brands. Brand
+    workspaces leave it off since the workspace itself identifies
+    the brand.
+    """
     body_lines = [":video_camera: *Content to be reviewed*", ""]
+    if show_meta:
+        if brand_name:
+            body_lines.append(f"*Brand:* {brand_name}")
+        if campaign_name:
+            body_lines.append(f"*Campaign:* {campaign_name}")
+        if brand_name or campaign_name:
+            body_lines.append("")
     if creator_username:
         body_lines.append("*Instagram username*")
         body_lines.append(f"@{creator_username}")
@@ -340,14 +355,24 @@ def build_video_links_submitted_blocks(
     brand_name: str,
     video_title: str,
     links: list[dict],
+    show_meta: bool = False,
 ) -> list[dict]:
     """
     Webhook event: creator submitted video links (posted content).
 
     `links` is a list of dicts with keys `platform` (raw key, e.g.
     'instagram', 'tiktok', 'youtube') and `url`.
+
+    `show_meta=True` adds Brand + Campaign rows for the admin side.
     """
     body_lines = [":tada: *Content posted*", ""]
+    if show_meta:
+        if brand_name:
+            body_lines.append(f"*Brand:* {brand_name}")
+        if campaign_name:
+            body_lines.append(f"*Campaign:* {campaign_name}")
+        if brand_name or campaign_name:
+            body_lines.append("")
     if creator_username:
         body_lines.append("*Instagram username*")
         body_lines.append(f"@{creator_username}")

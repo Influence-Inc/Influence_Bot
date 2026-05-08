@@ -287,7 +287,8 @@ class SchedulerService:
                 text=text,
                 blocks=blocks,
             )
-            post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
+            # Payment alerts are admin-only: brands don't see "ready to pay"
+            # messages for their own creators.
             logger.info(f"Deliverable complete alert: @{username}")
         except Exception as e:
             logger.error(f"Error checking deliverables for @{username}: {e}")

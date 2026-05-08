@@ -153,6 +153,7 @@ class WebhookHandler:
                 video_link=video_link,
                 notes=notes,
                 review_id=review_id,
+                show_meta=True,
             )
             text = f"New review submitted by @{username} for {campaign_name}"
 
@@ -174,16 +175,18 @@ class WebhookHandler:
                 finally:
                     db.close()
 
-            # Mirror to the brand's own workspace (no Approve/Request-Changes
-            # buttons there — review decisions are owned by the admin channel
-            # so cross-workspace state can't drift).
+            # Mirror to the brand's own workspace, including the Approve /
+            # Request Changes buttons so the brand can drive the decision.
+            # The first click (admin or brand) wins via the DB-level
+            # "already decided" guard in bot/actions.py.
             brand_blocks = build_review_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
                 brand_name=brand_name,
                 video_link=video_link,
                 notes=notes,
-                review_id=None,
+                review_id=review_id,
+                show_meta=False,
             )
             post_to_brand_workspace(brand_name, text, brand_blocks)
 
@@ -223,24 +226,35 @@ class WebhookHandler:
                 )
 
             brand_name = campaign.get("brandName") or campaign.get("brand_name") or ""
-            blocks = build_video_links_submitted_blocks(
+            video_title = video.get("title", "")
+            admin_blocks = build_video_links_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
                 brand_name=brand_name,
-                video_title=video.get("title", ""),
+                video_title=video_title,
                 links=links,
+                show_meta=True,
             )
             text = f"Video links submitted by @{username} for {campaign_name}"
 
             ok, _channel, _ts = self._post_to_slack(
                 channel=Config.SLACK_CHANNEL_UPLOADS,
                 text=text,
-                blocks=blocks,
+                blocks=admin_blocks,
                 event_label="video_links_submitted",
             )
 
-            # Mirror to the brand's own workspace.
-            post_to_brand_workspace(brand_name, text, blocks)
+            # Mirror to the brand's own workspace (no Brand/Campaign rows
+            # there — the workspace itself identifies the brand).
+            brand_blocks = build_video_links_submitted_blocks(
+                creator_username=username,
+                campaign_name=campaign_name,
+                brand_name=brand_name,
+                video_title=video_title,
+                links=links,
+                show_meta=False,
+            )
+            post_to_brand_workspace(brand_name, text, brand_blocks)
 
             if ok:
                 logger.info(
