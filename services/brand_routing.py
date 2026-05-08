@@ -17,10 +17,16 @@ hits first.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Optional
 
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+
 from models.models import SessionLocal, SlackInstallation
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize(value: Optional[str]) -> str:
@@ -69,3 +75,37 @@ def install_brand_label(install: Optional[SlackInstallation]) -> str:
     if install is None:
         return "(none)"
     return install.brand or install.team_name or install.team_id or "(unknown)"
+
+
+def post_to_brand_workspace(
+    brand_name: Optional[str],
+    text: str,
+    blocks: list[dict],
+) -> None:
+    """
+    Mirror an admin-channel notification to the brand's own workspace if
+    they've installed the bot via /slack/install. No-op for brands that
+    haven't installed (or whose install row has no channel/token yet).
+    Failures are logged and swallowed so a broken brand install never
+    blocks admin notifications.
+    """
+    install = find_install_for_brand_name(brand_name)
+    if install is None or not install.bot_token or not install.channel_id:
+        return
+    try:
+        WebClient(token=install.bot_token).chat_postMessage(
+            channel=install.channel_id,
+            text=text,
+            blocks=blocks,
+        )
+    except SlackApiError as e:
+        err = e.response.get("error") if e.response else str(e)
+        logger.warning(
+            "Brand-workspace post failed: brand=%s team_id=%s channel=%s error=%s",
+            install_brand_label(install), install.team_id, install.channel_id, err,
+        )
+    except Exception as e:
+        logger.warning(
+            "Brand-workspace post failed: brand=%s error=%s",
+            install_brand_label(install), e,
+        )

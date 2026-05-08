@@ -17,9 +17,30 @@ trigger global checks.
 import logging
 import re
 
+from models.models import (
+    DeadlineReminder,
+    DeliverableAlert,
+    MilestoneAlert,
+    SessionLocal,
+    UploadFollowup,
+)
 from services.brand_routing import find_install_by_team
 
 logger = logging.getLogger(__name__)
+
+
+def _alert_counts() -> dict[str, int]:
+    """Snapshot row counts for each dedup table (used by /influence-check)."""
+    db = SessionLocal()
+    try:
+        return {
+            "milestones": db.query(MilestoneAlert).count(),
+            "deliverables": db.query(DeliverableAlert).count(),
+            "deadlines": db.query(DeadlineReminder).count(),
+            "uploads": db.query(UploadFollowup).count(),
+        }
+    finally:
+        db.close()
 
 
 def _normalize(value):
@@ -108,9 +129,38 @@ def register_commands(app, scheduler_service, reelstats_api):
             text=":mag: Running all checks now (milestones, deliverables, deadlines, uploads)...",
             response_type="ephemeral",
         )
+
+        before = _alert_counts()
         scheduler_service.run_all_checks()
+        after = _alert_counts()
+
+        deltas = {k: after[k] - before[k] for k in before}
+        total_new = sum(deltas.values())
+
+        if total_new == 0:
+            respond(
+                text=(
+                    ":white_check_mark: All checks complete — nothing new to "
+                    "notify since the last run."
+                ),
+                response_type="ephemeral",
+            )
+            return
+
+        labels = {
+            "milestones": "milestone",
+            "deliverables": "deliverables-complete",
+            "deadlines": "deadline reminder",
+            "uploads": "upload follow-up",
+        }
+        breakdown = ", ".join(
+            f"{deltas[k]} {labels[k]}" for k in deltas if deltas[k] > 0
+        )
         respond(
-            text=":white_check_mark: All checks complete. Notifications sent for any new items.",
+            text=(
+                f":white_check_mark: All checks complete. Sent *{total_new}* "
+                f"new notification(s): {breakdown}."
+            ),
             response_type="ephemeral",
         )
 
