@@ -306,6 +306,62 @@ def health():
 
 
 # ---------------------------------------------------------------------------
+# SMTP egress diagnostic — temporary. Tests outbound TCP to the configured
+# (or query-string-overridden) SMTP host:port from inside the Railway
+# container so we can tell whether email timeouts are network-level
+# (Railway blocking SMTP) or auth/config-level.
+#
+# Usage:
+#   GET /debug/smtp                    -> uses Config.SMTP_HOST / SMTP_PORT
+#   GET /debug/smtp?port=465           -> override port
+#   GET /debug/smtp?host=smtp.x&port=2525
+#
+# Remove once diagnosis is complete.
+# ---------------------------------------------------------------------------
+@flask_app.route("/debug/smtp", methods=["GET"])
+def debug_smtp():
+    import socket
+    import time
+
+    host = request.args.get("host") or Config.SMTP_HOST
+    try:
+        port = int(request.args.get("port") or Config.SMTP_PORT)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid port"}), 400
+
+    result = {"host": host, "port": port}
+
+    # 1. DNS lookup (IPv4 only — matches what _IPv4SMTP does in production).
+    t0 = time.monotonic()
+    try:
+        addrinfo = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        result["dns_ms"] = int((time.monotonic() - t0) * 1000)
+        result["resolved_ips"] = sorted({a[4][0] for a in addrinfo})
+    except Exception as e:
+        result["ok"] = False
+        result["stage"] = "dns"
+        result["error"] = f"{type(e).__name__}: {e}"
+        return jsonify(result), 200
+
+    # 2. TCP connect.
+    t0 = time.monotonic()
+    try:
+        s = socket.create_connection(addrinfo[0][4], timeout=10)
+        result["connect_ms"] = int((time.monotonic() - t0) * 1000)
+        result["peer"] = f"{s.getpeername()[0]}:{s.getpeername()[1]}"
+        s.close()
+        result["ok"] = True
+        result["stage"] = "connect"
+    except Exception as e:
+        result["ok"] = False
+        result["stage"] = "connect"
+        result["connect_ms"] = int((time.monotonic() - t0) * 1000)
+        result["error"] = f"{type(e).__name__}: {e}"
+
+    return jsonify(result), 200
+
+
+# ---------------------------------------------------------------------------
 # Startup — runs at import time under gunicorn (`app:flask_app`).
 # Gunicorn must be started with --workers 1 so the in-process scheduler
 # runs exactly once; multiple workers would fire every scheduled job N
