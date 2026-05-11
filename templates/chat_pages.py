@@ -47,6 +47,14 @@ CHAT_PAGE = """\
     .emoji-pop button { background:transparent; border:0; font-size:18px; cursor:pointer; padding:4px; }
     .archived { background:#fef2f2; color:#991b1b; padding:10px 20px; font-size:13px; }
     .unread-pill { display:inline-block; background:#ef4444; color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; margin-left:6px; }
+    .receipts { font-size:11px; color:#9ca3af; margin-left:6px; }
+    .receipts.read { color:#2563eb; }
+    .typing-bar { font-size:12px; color:#6b7280; padding:4px 16px; min-height:18px; max-width:780px; margin:0 auto; width:100%; box-sizing:border-box; }
+    .typing-bar.active { color:#4b5563; }
+    .typing-bar .dot { display:inline-block; width:4px; height:4px; background:#9ca3af; border-radius:50%; margin:0 1px; animation:typing 1.2s infinite; }
+    .typing-bar .dot:nth-child(2) { animation-delay:.15s; }
+    .typing-bar .dot:nth-child(3) { animation-delay:.3s; }
+    @keyframes typing { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
   </style>
 </head>
 <body data-space-id="{{ space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status == 'archived' else 'false' }}">
@@ -59,6 +67,7 @@ CHAT_PAGE = """\
   <div class="archived">This campaign has ended — chat is archived and read-only.</div>
   {% endif %}
   <main id="messages"></main>
+  <div class="typing-bar" id="typingBar"></div>
   <footer class="compose">
     <form class="compose-inner" id="composeForm" autocomplete="off">
       <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
@@ -72,6 +81,7 @@ CHAT_PAGE = """\
     </div>
   </footer>
 
+<script id="initial-read-state" type="application/json">{{ initial_read_state | tojson }}</script>
 <script>
 (function() {
   const bodyEl = document.body;
@@ -86,19 +96,42 @@ CHAT_PAGE = """\
   const fileInput = document.getElementById('fileInput');
   const emojiBtn = document.getElementById('emojiBtn');
   const emojiPop = document.getElementById('emojiPop');
+  const typingBar = document.getElementById('typingBar');
 
   let lastId = 0;
-  let polling = false;
+  // party -> highest last_read_message_id seen for that party.
+  const readState = JSON.parse(document.getElementById('initial-read-state').textContent || '{}');
+  // identifier -> { name, until_ts } for currently-typing remote users.
+  const typingUsers = new Map();
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  function renderMessage(m) {
+  function receiptHtml(m) {
+    if (m.party !== selfParty) return '';
+    // For a message I sent: read by the OTHER party if any of their members
+    // has last_read >= m.id.
+    let readByOther = false;
+    for (const [p, last] of Object.entries(readState)) {
+      if (p !== selfParty && last >= m.id) { readByOther = true; break; }
+    }
+    return '<span class="receipts' + (readByOther ? ' read' : '') + '">' +
+      (readByOther ? '✓✓' : '✓') + '</span>';
+  }
+
+  function renderMessage(m, opts) {
+    const upsert = opts && opts.upsert;
+    let div = messagesEl.querySelector('[data-id="' + m.id + '"]');
     const mine = m.party === selfParty;
-    const div = document.createElement('div');
-    div.className = 'msg ' + (mine ? 'me' : 'them');
-    div.dataset.id = m.id;
+    if (!div) {
+      div = document.createElement('div');
+      div.className = 'msg ' + (mine ? 'me' : 'them');
+      div.dataset.id = m.id;
+      messagesEl.appendChild(div);
+    } else if (!upsert) {
+      return;
+    }
     let attHtml = '';
     if (m.attachments && m.attachments.length) {
       attHtml = '<div class="attachments">' + m.attachments.map(a => {
@@ -122,39 +155,125 @@ CHAT_PAGE = """\
       '<div class="who">' + escapeHtml(m.sender || m.party) + '</div>' +
       '<div class="body">' + escapeHtml(m.body) + '</div>' +
       attHtml + reactHtml +
-      '<div class="ts">' + escapeHtml(ts) + '</div>' +
+      '<div class="ts">' + escapeHtml(ts) + receiptHtml(m) + '</div>' +
       '</div>';
-    messagesEl.appendChild(div);
     if (m.id > lastId) lastId = m.id;
   }
 
+  function rerenderReceiptsOnly() {
+    // Cheap pass: only update the receipt spans for messages I sent.
+    messagesEl.querySelectorAll('.msg.me').forEach(div => {
+      const id = parseInt(div.dataset.id, 10);
+      const span = div.querySelector('.receipts');
+      if (!span) return;
+      let readByOther = false;
+      for (const [p, last] of Object.entries(readState)) {
+        if (p !== selfParty && last >= id) { readByOther = true; break; }
+      }
+      span.className = 'receipts' + (readByOther ? ' read' : '');
+      span.textContent = readByOther ? '✓✓' : '✓';
+    });
+  }
+
   function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
     window.scrollTo(0, document.body.scrollHeight);
   }
 
-  async function poll() {
-    if (polling) return;
-    polling = true;
+  function sendRead() {
+    if (!lastId) return;
+    fetch('/chat/' + spaceId + '/read', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ up_to: lastId }),
+    }).catch(() => {});
+  }
+
+  async function backfill() {
     try {
       const r = await fetch('/chat/' + spaceId + '/messages?since=' + lastId, { credentials: 'same-origin' });
       if (!r.ok) return;
       const data = await r.json();
       if (data.messages && data.messages.length) {
-        for (const m of data.messages) renderMessage(m);
+        for (const m of data.messages) renderMessage(m, { upsert: true });
         scrollToBottom();
-        if (lastId > 0) {
-          fetch('/chat/' + spaceId + '/read', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ up_to: lastId }),
-          });
-        }
+        sendRead();
       }
     } catch (e) { /* swallow */ }
-    polling = false;
   }
 
+  function renderTypingBar() {
+    const now = Date.now();
+    const names = [];
+    for (const [ident, info] of typingUsers) {
+      if (info.until_ts < now) typingUsers.delete(ident);
+      else names.push(info.name);
+    }
+    if (!names.length) {
+      typingBar.textContent = '';
+      typingBar.classList.remove('active');
+      return;
+    }
+    typingBar.classList.add('active');
+    const label = names.length === 1 ? names[0] + ' is typing' : names.join(', ') + ' are typing';
+    typingBar.innerHTML = escapeHtml(label) + ' <span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  }
+  setInterval(renderTypingBar, 1000);
+
+  // --- Live updates via SSE, with periodic backfill as a safety net. ---
+  let sse = null;
+  function connectSSE() {
+    if (typeof EventSource === 'undefined') return;
+    try { sse = new EventSource('/chat/' + spaceId + '/stream'); } catch (e) { return; }
+    sse.addEventListener('hello', () => backfill());
+    sse.addEventListener('message', (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        renderMessage(m, { upsert: true });
+        scrollToBottom();
+        sendRead();
+      } catch (e) {}
+    });
+    sse.addEventListener('reaction', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const div = messagesEl.querySelector('[data-id="' + d.message_id + '"] .reactions');
+        if (!div) { backfill(); return; }
+        let html = '';
+        for (const [k, n] of Object.entries(d.counts || {})) {
+          html += '<button class="react" data-emoji="' + escapeHtml(k) + '" data-msg="' + d.message_id + '">' + escapeHtml(k) + ' ' + n + '</button>';
+        }
+        if (!archived) html += '<button class="react add" data-msg="' + d.message_id + '">+</button>';
+        div.innerHTML = html;
+      } catch (e) {}
+    });
+    sse.addEventListener('read', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const current = readState[d.party] || 0;
+        if (d.last_read_message_id > current) {
+          readState[d.party] = d.last_read_message_id;
+          rerenderReceiptsOnly();
+        }
+      } catch (e) {}
+    });
+    sse.addEventListener('typing', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.party === selfParty) return;
+        const key = d.party + ':' + d.identifier;
+        typingUsers.set(key, { name: d.display_name || d.party, until_ts: Date.now() + 5000 });
+        renderTypingBar();
+      } catch (e) {}
+    });
+    sse.onerror = () => {
+      // Browser will auto-reconnect; if it can't, our setInterval backfill
+      // below keeps the chat usable.
+    };
+  }
+  connectSSE();
+  setInterval(backfill, 30000);
+
+  // --- Compose + send ---
   async function sendMessage(body, file) {
     const form = new FormData();
     if (body) form.append('body', body);
@@ -165,7 +284,11 @@ CHAT_PAGE = """\
       const r = await fetch('/chat/' + spaceId + '/messages', {
         method: 'POST', credentials: 'same-origin', body: form,
       });
-      if (r.ok) { bodyInput.value = ''; await poll(); }
+      if (r.ok) {
+        bodyInput.value = '';
+        // The SSE `message` event will render the new bubble; if SSE is
+        // down, the 30s backfill will catch up.
+      }
     } finally { sendBtn.disabled = archived; }
   }
 
@@ -173,8 +296,19 @@ CHAT_PAGE = """\
     e.preventDefault();
     sendMessage(bodyInput.value.trim(), null);
   });
+
+  let lastTypingPing = 0;
+  function pingTyping() {
+    if (archived) return;
+    const now = Date.now();
+    if (now - lastTypingPing < 2000) return;
+    lastTypingPing = now;
+    fetch('/chat/' + spaceId + '/typing', { method: 'POST', credentials: 'same-origin' })
+      .catch(() => {});
+  }
   bodyInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composeForm.requestSubmit(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composeForm.requestSubmit(); return; }
+    pingTyping();
   });
   fileBtn.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
@@ -201,7 +335,7 @@ CHAT_PAGE = """\
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emoji }),
-      }).then(poll);
+      });
     } else {
       bodyInput.value += emoji;
       bodyInput.focus();
@@ -224,11 +358,10 @@ CHAT_PAGE = """\
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ emoji: btn.dataset.emoji }),
-    }).then(poll);
+    });
   });
 
-  poll().then(scrollToBottom);
-  setInterval(poll, 3000);
+  backfill().then(scrollToBottom);
 })();
 </script>
 </body>
@@ -262,12 +395,20 @@ ADMIN_DASHBOARD = """\
 body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5f7; margin:0; }
 .container { max-width:1100px; margin:0 auto; padding:24px; }
 h1 { font-size:20px; margin:0 0 16px; }
-.stats { display:flex; gap:12px; margin-bottom:16px; }
-.stat { flex:1; background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; }
+.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+.stat { background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; }
 .stat .v { font-size:22px; font-weight:600; }
 .stat .l { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.05em; }
-form.search { display:flex; gap:8px; margin-bottom:12px; }
-form.search input, form.search select { padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; }
+.panel { background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; margin-bottom:16px; }
+.panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:#6b7280; margin:0 0 8px; font-weight:500; }
+.panel ol { margin:0; padding-left:18px; font-size:13px; color:#1f2937; }
+.panel li + li { margin-top:4px; }
+form.search { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+form.search input, form.search select { padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; }
+form.search input[type=text] { min-width:240px; flex:1; }
+.chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+.chips a { font-size:12px; padding:4px 10px; border-radius:14px; background:#fff; border:1px solid #d1d5db; color:#1f2937; text-decoration:none; }
+.chips a.on { background:#111827; color:#fff; border-color:#111827; }
 table { width:100%; background:#fff; border:1px solid #e5e5ea; border-radius:10px; border-collapse:separate; border-spacing:0; overflow:hidden; }
 th, td { text-align:left; padding:10px 12px; font-size:13px; border-bottom:1px solid #f1f1f3; }
 th { background:#f9fafb; font-weight:500; color:#6b7280; }
@@ -283,16 +424,31 @@ a.row { color:#1d4ed8; text-decoration:none; }
   <div class="stat"><div class="v">{{ stats.active }}</div><div class="l">Active</div></div>
   <div class="stat"><div class="v">{{ stats.archived }}</div><div class="l">Archived</div></div>
   <div class="stat"><div class="v">{{ stats.active_creators }}</div><div class="l">Active creators</div></div>
+  <div class="stat"><div class="v">{{ stats.recently_active }}</div><div class="l">Active 7d</div></div>
 </div>
+{% if stats.top_revisions %}
+<div class="panel">
+  <h2>Campaigns with most revisions</h2>
+  <ol>
+  {% for r in stats.top_revisions %}
+    <li>{{ r.campaign_name or '—' }}{% if r.brand_name %} <span style="color:#6b7280">· {{ r.brand_name }}</span>{% endif %} — <b>{{ r.revisions }}</b></li>
+  {% endfor %}
+  </ol>
+</div>
+{% endif %}
 <form class="search" method="GET">
   <input type="text" name="q" value="{{ query.q or '' }}" placeholder="Search creator / campaign / brand…">
-  <select name="status">
-    <option value="">All statuses</option>
-    <option value="active" {% if query.status == 'active' %}selected{% endif %}>Active</option>
-    <option value="archived" {% if query.status == 'archived' %}selected{% endif %}>Archived</option>
-  </select>
+  <input type="text" name="brand" value="{{ query.brand or '' }}" placeholder="Brand exact match (optional)">
   <button type="submit">Filter</button>
+  {% if query.q or query.brand or query.status %}
+    <a href="/admin/chats" style="padding:8px 10px;color:#6b7280;text-decoration:none">Clear</a>
+  {% endif %}
 </form>
+<div class="chips">
+  <a href="/admin/chats" class="{% if not query.status %}on{% endif %}">All</a>
+  <a href="/admin/chats?status=active" class="{% if query.status == 'active' %}on{% endif %}">Active</a>
+  <a href="/admin/chats?status=archived" class="{% if query.status == 'archived' %}on{% endif %}">Archived</a>
+</div>
 <table>
 <thead><tr><th>Creator</th><th>Campaign</th><th>Brand</th><th>Status</th><th>Last message</th><th></th></tr></thead>
 <tbody>
@@ -323,21 +479,50 @@ body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5
 .crumbs a { color:#1d4ed8; text-decoration:none; }
 h1 { font-size:18px; margin:0 0 4px; }
 .meta { font-size:13px; color:#6b7280; margin-bottom:12px; }
+.toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px; }
+.toolbar a, .toolbar button { font-size:13px; padding:7px 12px; border-radius:8px; text-decoration:none; border:1px solid #d1d5db; background:#fff; color:#1f2937; cursor:pointer; }
+.toolbar form { display:inline; margin:0; }
+.toolbar .danger { color:#991b1b; border-color:#fecaca; background:#fff1f2; }
+.toolbar .primary { color:#fff; background:#111827; border-color:#111827; }
 .archived-note { background:#fef2f2; color:#991b1b; padding:8px 12px; border-radius:8px; font-size:13px; margin-bottom:12px; }
 .msg { background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:10px 14px; margin:8px 0; }
+.msg.party-admin { background:#fffbeb; border-color:#fde68a; }
 .msg .who { font-size:11px; color:#6b7280; margin-bottom:2px; }
-.msg .body { white-space:pre-wrap; font-size:14px; }
+.msg .body { white-space:pre-wrap; font-size:14px; word-break:break-word; }
 .msg .ts { font-size:11px; color:#9ca3af; margin-top:4px; }
 .msg img { max-width:240px; border-radius:8px; margin-top:6px; display:block; }
 .reactions { margin-top:6px; font-size:12px; color:#6b7280; }
+.compose { background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:10px; margin-top:14px; }
+.compose textarea { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #d1d5db; font-family:inherit; font-size:14px; min-height:60px; box-sizing:border-box; resize:vertical; }
+.compose .row { display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px; }
+.compose .row .hint { font-size:11px; color:#6b7280; }
+.compose button { background:#111827; color:#fff; border:0; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
 </style></head><body>
 <div class="container">
 <div class="crumbs"><a href="/admin/chats">← All chat spaces</a></div>
 <h1>{{ space.campaign_name or '—' }} · {{ space.brand_name or '—' }}</h1>
 <div class="meta">Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} · status: {{ space.status }} · created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
-{% if space.status == 'archived' %}<div class="archived-note">This chat is archived.</div>{% endif %}
+
+<div class="toolbar">
+  <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
+  <a href="/admin/chats/{{ space.id }}/export.json" download>Export JSON</a>
+  {% if space.status == 'active' %}
+    <form method="POST" action="/admin/chats/{{ space.id }}/archive">
+      <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+      <button type="submit" class="danger" onclick="return confirm('Archive this chat? Both parties will lose access until it is reopened.');">Archive</button>
+    </form>
+  {% else %}
+    <form method="POST" action="/admin/chats/{{ space.id }}/reopen">
+      <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+      <button type="submit" class="primary">Reopen</button>
+    </form>
+  {% endif %}
+</div>
+
+{% if space.status == 'archived' %}<div class="archived-note">This chat is archived. Reopen it before posting; existing sessions stay revoked, so both parties will need fresh magic links.</div>{% endif %}
+
 {% for m in messages %}
-<div class="msg">
+<div class="msg party-{{ m.party }}">
   <div class="who">{{ m.sender }} · {{ m.party }}</div>
   <div class="body">{{ m.body }}</div>
   {% for a in m.attachments %}<img src="/chat/attachment/{{ a.id }}?admin=1" alt="{{ a.filename }}">{% endfor %}
@@ -346,6 +531,18 @@ h1 { font-size:18px; margin:0 0 4px; }
 </div>
 {% endfor %}
 {% if not messages %}<div style="text-align:center;color:#6b7280;padding:24px">No messages yet.</div>{% endif %}
+
+{% if space.status == 'active' %}
+<form class="compose" method="POST" action="/admin/chats/{{ space.id }}/messages">
+  <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+  <textarea name="body" placeholder="Post a message as Influence (visible to both creator and brand)…" required></textarea>
+  <div class="row">
+    <span class="hint">Sender will appear as <b>Influence</b>. The creator will get an email and the brand workspace will be pinged.</span>
+    <button type="submit">Send</button>
+  </div>
+</form>
+{% endif %}
+
 </div></body></html>
 """
 

@@ -24,6 +24,8 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
+import json
+
 from flask import (
     Blueprint,
     Response,
@@ -32,11 +34,13 @@ from flask import (
     make_response,
     render_template_string,
     request,
+    stream_with_context,
 )
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from config import Config
 from services import chat_service
+from services.chat_pubsub import maybe_publish_typing, subscribe as pubsub_subscribe
 from services.chat_service import (
     archive_for_campaign,
     archive_space,
@@ -181,11 +185,13 @@ def chat_page(space_id: int):
     chat_title = f"Chat with {space.brand_name or 'the brand'}" if sess.party == "creator" \
         else f"Chat with @{space.creator_username}"
 
+    initial_read = chat_service.read_state_for_space(space.id)
     html = render_template_string(
         CHAT_PAGE,
         space=space,
         self_party=sess.party,
         chat_title=chat_title,
+        initial_read_state=initial_read,
     )
     return Response(html, mimetype="text/html")
 
@@ -243,17 +249,19 @@ def chat_messages_post(space_id: int):
     if not body and not file:
         return jsonify({"error": "empty"}), 400
 
+    has_file = bool(file and file.filename)
     msg = chat_service.post_message(
         chat_space_id=space_id,
         sender_party=sess.party,
         sender_identifier=sess.identifier,
         sender_display_name=sess.display_name,
         body=body or " ",
+        publish=not has_file,
     )
     if msg is None:
         return jsonify({"error": "failed"}), 500
 
-    if file and file.filename:
+    if has_file:
         data = file.read()
         chat_service.store_attachment(
             message_id=msg.id,
@@ -261,6 +269,9 @@ def chat_messages_post(space_id: int):
             content_type=(file.mimetype or "application/octet-stream").lower(),
             data=data,
         )
+        # Now that the attachment row exists, publish the full message so
+        # SSE subscribers receive a single event with body + attachments.
+        chat_service.publish_message(msg.id)
 
     # Notify the other side out-of-band (Slack/email), best-effort.
     try:
@@ -288,6 +299,66 @@ def chat_message_react(space_id: int, message_id: int):
         emoji=emoji,
     )
     return jsonify({"ok": True, "active": now_present})
+
+
+@bp.route("/chat/<int:space_id>/stream", methods=["GET"])
+def chat_stream(space_id: int):
+    """
+    Server-Sent Events stream for a chat space. The browser subscribes here
+    and receives `message`, `reaction`, `read`, `typing`, and `ping`
+    events. Each open connection holds one gthread for its lifetime — see
+    Procfile `--threads` tuning.
+    """
+    sess, err = _require_session_for_space(space_id)
+    if err is not None:
+        return err
+
+    self_party = sess.party
+    self_identifier = sess.identifier
+
+    try:
+        sub_ctx = pubsub_subscribe(space_id).__enter__()
+    except OverflowError:
+        return jsonify({"error": "too_many_subscribers"}), 503
+
+    @stream_with_context
+    def generator():
+        try:
+            # Initial hello: lets the client confirm the stream is live.
+            yield f"event: hello\ndata: {json.dumps({'space_id': space_id})}\n\n"
+            for event in sub_ctx.iter_events():
+                # Don't echo typing events back to the typist themselves.
+                if event["type"] == "typing":
+                    d = event.get("data") or {}
+                    if d.get("party") == self_party and d.get("identifier") == self_identifier:
+                        continue
+                yield (
+                    f"event: {event['type']}\n"
+                    f"data: {json.dumps(event['data'])}\n\n"
+                )
+        finally:
+            sub_ctx.__exit__(None, None, None)
+
+    headers = {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "Content-Type": "text/event-stream; charset=utf-8",
+    }
+    return Response(generator(), headers=headers)
+
+
+@bp.route("/chat/<int:space_id>/typing", methods=["POST"])
+def chat_typing(space_id: int):
+    sess, err = _require_session_for_space(space_id)
+    if err is not None:
+        return err
+    maybe_publish_typing(
+        space_id=space_id,
+        party=sess.party,
+        identifier=sess.identifier,
+        display_name=sess.display_name,
+    )
+    return jsonify({"ok": True})
 
 
 @bp.route("/chat/<int:space_id>/read", methods=["POST"])
@@ -369,13 +440,14 @@ def admin_chats_list():
 
     q = (request.args.get("q") or "").strip() or None
     status = (request.args.get("status") or "").strip() or None
-    spaces = chat_service.list_spaces_for_admin(status=status, search=q)
+    brand = (request.args.get("brand") or "").strip() or None
+    spaces = chat_service.list_spaces_for_admin(status=status, search=q, brand=brand)
     stats = chat_service.admin_stats()
     html = render_template_string(
         ADMIN_DASHBOARD,
         spaces=spaces,
         stats=stats,
-        query={"q": q, "status": status},
+        query={"q": q, "status": status, "brand": brand},
     )
     return Response(html, mimetype="text/html")
 
@@ -423,7 +495,84 @@ def admin_chat_archive(space_id: int):
     if not _is_admin():
         return jsonify({"error": "forbidden"}), 403
     ok = archive_space(space_id)
+    # Form posts (from the admin UI) get a redirect; JSON callers get JSON.
+    if request.form.get("redirect"):
+        return make_response("", 302, {"Location": request.form.get("redirect")})
     return jsonify({"ok": ok})
+
+
+@bp.route("/admin/chats/<int:space_id>/reopen", methods=["POST"])
+def admin_chat_reopen(space_id: int):
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    ok = chat_service.reopen_space(space_id)
+    if request.form.get("redirect"):
+        return make_response("", 302, {"Location": request.form.get("redirect")})
+    return jsonify({"ok": ok})
+
+
+@bp.route("/admin/chats/<int:space_id>/messages", methods=["POST"])
+def admin_chat_post_message(space_id: int):
+    """Admin posts into a chat as party='admin'. Broadcasts via SSE so both
+    creator and brand see the message live."""
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    space = find_by_id(space_id)
+    if space is None or space.status != "active":
+        return jsonify({"error": "chat_closed"}), 410
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        return jsonify({"error": "empty"}), 400
+    msg = chat_service.post_message(
+        chat_space_id=space_id,
+        sender_party="admin",
+        sender_identifier="influence-admin",
+        sender_display_name="Influence",
+        body=body,
+    )
+    if msg is None:
+        return jsonify({"error": "failed"}), 500
+    # Side-channel notifications: email creator + Slack-ping brand, same as
+    # if either of them had spoken.
+    try:
+        from services.chat_notifications import notify_new_message
+        notify_new_message(chat_space_id=space_id, sender_party="admin", message_id=msg.id)
+    except Exception as exc:
+        logger.warning("admin message notification failed: %s", exc)
+    if request.form.get("redirect"):
+        return make_response("", 302, {"Location": request.form.get("redirect")})
+    return jsonify({"ok": True, "id": msg.id})
+
+
+@bp.route("/admin/chats/<int:space_id>/export.json", methods=["GET"])
+def admin_chat_export_json(space_id: int):
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    snap = chat_service.export_transcript(space_id)
+    if snap is None:
+        return _error_response("Not found", "Chat space not found.", status=404)
+    filename = f"chat-{space_id}-transcript.json"
+    return Response(
+        json.dumps(snap, indent=2, ensure_ascii=False),
+        mimetype="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@bp.route("/admin/chats/<int:space_id>/export.md", methods=["GET"])
+def admin_chat_export_md(space_id: int):
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    snap = chat_service.export_transcript(space_id)
+    if snap is None:
+        return _error_response("Not found", "Chat space not found.", status=404)
+    md = chat_service.transcript_to_markdown(snap)
+    filename = f"chat-{space_id}-transcript.md"
+    return Response(
+        md,
+        mimetype="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def register_chat_routes(flask_app) -> None:

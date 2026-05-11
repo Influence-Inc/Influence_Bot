@@ -35,6 +35,7 @@ from models.models import (
     SessionLocal,
 )
 from services.brand_routing import find_install_for_brand_name
+from services.chat_pubsub import publish as _pubsub_publish
 from utils.chat_tokens import revoke_sessions_for_space
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,7 @@ def upsert_member(
 
 
 def mark_read(*, chat_space_id: int, party: str, identifier: str, up_to_message_id: int) -> None:
+    changed = False
     db = SessionLocal()
     try:
         row = (
@@ -245,10 +247,21 @@ def mark_read(*, chat_space_id: int, party: str, identifier: str, up_to_message_
             return
         if row.last_read_message_id is None or up_to_message_id > row.last_read_message_id:
             row.last_read_message_id = up_to_message_id
+            changed = True
         row.last_seen_at = datetime.now(timezone.utc)
         db.commit()
     finally:
         db.close()
+    if changed:
+        _pubsub_publish(
+            chat_space_id,
+            "read",
+            {
+                "party": party,
+                "identifier": identifier,
+                "last_read_message_id": up_to_message_id,
+            },
+        )
 
 
 def unread_count(*, chat_space_id: int, party: str, identifier: str) -> int:
@@ -284,7 +297,14 @@ def post_message(
     sender_identifier: Optional[str],
     sender_display_name: Optional[str],
     body: str,
+    publish: bool = True,
 ) -> Optional[ChatMessage]:
+    """
+    Persist a new message. Set `publish=False` if the caller is about to
+    attach a file and wants to broadcast the complete message (body +
+    attachments) via `publish_message(msg.id)` once the attachment row is
+    written; that way SSE subscribers see one event with everything.
+    """
     body = (body or "").strip()
     if len(body) > _MAX_BODY:
         body = body[:_MAX_BODY]
@@ -308,9 +328,47 @@ def post_message(
         db.commit()
         db.refresh(msg)
         db.expunge(msg)
-        return msg
     finally:
         db.close()
+
+    if publish:
+        publish_message(msg.id)
+    return msg
+
+
+def publish_message(message_id: int) -> None:
+    """Emit the full serialized form of an existing message to SSE subscribers."""
+    db = SessionLocal()
+    try:
+        msg = db.query(ChatMessage).get(message_id)
+        if msg is None:
+            return
+        chat_space_id = msg.chat_space_id
+        reactions: dict[str, int] = {}
+        for r in db.query(ChatReaction).filter(ChatReaction.message_id == message_id).all():
+            reactions[r.emoji] = reactions.get(r.emoji, 0) + 1
+        attachments = [
+            {
+                "id": a.id,
+                "filename": a.filename,
+                "content_type": a.content_type,
+                "size": a.size_bytes,
+            }
+            for a in db.query(ChatAttachment).filter(ChatAttachment.message_id == message_id).all()
+        ]
+        payload = {
+            "id": msg.id,
+            "party": msg.sender_party,
+            "sender": msg.sender_display_name or msg.sender_identifier or msg.sender_party,
+            "body": msg.body,
+            "created_at": msg.created_at.replace(tzinfo=timezone.utc).isoformat()
+            if msg.created_at else None,
+            "reactions": reactions,
+            "attachments": attachments,
+        }
+    finally:
+        db.close()
+    _pubsub_publish(chat_space_id, "message", payload)
 
 
 def list_messages(
@@ -448,6 +506,11 @@ def toggle_reaction(
         return False
     db = SessionLocal()
     try:
+        msg = db.query(ChatMessage).get(message_id)
+        if msg is None:
+            return False
+        chat_space_id = msg.chat_space_id
+
         row = (
             db.query(ChatReaction)
             .filter_by(
@@ -458,17 +521,30 @@ def toggle_reaction(
         if row is not None:
             db.delete(row)
             db.commit()
-            return False
-        db.add(ChatReaction(
-            message_id=message_id, party=party, identifier=identifier, emoji=emoji,
-        ))
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-        return True
+            now_present = False
+        else:
+            db.add(ChatReaction(
+                message_id=message_id, party=party, identifier=identifier, emoji=emoji,
+            ))
+            try:
+                db.commit()
+                now_present = True
+            except IntegrityError:
+                db.rollback()
+                now_present = True
+
+        counts: dict[str, int] = {}
+        for r in db.query(ChatReaction).filter(ChatReaction.message_id == message_id).all():
+            counts[r.emoji] = counts.get(r.emoji, 0) + 1
     finally:
         db.close()
+
+    _pubsub_publish(
+        chat_space_id,
+        "reaction",
+        {"message_id": message_id, "counts": counts},
+    )
+    return now_present
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +564,22 @@ def archive_space(chat_space_id: int) -> bool:
         db.close()
     revoke_sessions_for_space(chat_space_id)
     return True
+
+
+def reopen_space(chat_space_id: int) -> bool:
+    """Re-activate an archived chat space. Sessions stay revoked — both
+    parties need fresh magic links."""
+    db = SessionLocal()
+    try:
+        space = db.query(ChatSpace).get(chat_space_id)
+        if space is None or space.status == "active":
+            return False
+        space.status = "active"
+        space.archived_at = None
+        db.commit()
+        return True
+    finally:
+        db.close()
 
 
 def archive_for_campaign(
@@ -565,6 +657,10 @@ def list_spaces_for_admin(
 
 
 def admin_stats() -> dict:
+    """Headline counts + top-revisions-per-campaign for the dashboard."""
+    from datetime import timedelta
+    from sqlalchemy import func
+
     db = SessionLocal()
     try:
         active = db.query(ChatSpace).filter(ChatSpace.status == "active").count()
@@ -575,9 +671,123 @@ def admin_stats() -> dict:
             .distinct()
             .count()
         )
-        return {"active": active, "archived": archived, "active_creators": creators}
+
+        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        recently_active = (
+            db.query(ChatSpace)
+            .filter(ChatSpace.last_message_at >= week_ago)
+            .count()
+        )
+
+        # Top campaigns by number of changes_requested decisions.
+        revisions_rows = (
+            db.query(
+                ReviewSubmission.campaign_name,
+                ReviewSubmission.brand_name,
+                func.count(ReviewSubmission.id).label("n"),
+            )
+            .filter(ReviewSubmission.decision == "changes_requested")
+            .group_by(ReviewSubmission.campaign_name, ReviewSubmission.brand_name)
+            .order_by(func.count(ReviewSubmission.id).desc())
+            .limit(5)
+            .all()
+        )
+        top_revisions = [
+            {"campaign_name": r[0], "brand_name": r[1], "revisions": r[2]}
+            for r in revisions_rows
+        ]
+
+        return {
+            "active": active,
+            "archived": archived,
+            "active_creators": creators,
+            "recently_active": recently_active,
+            "top_revisions": top_revisions,
+        }
     finally:
         db.close()
+
+
+def export_transcript(chat_space_id: int) -> Optional[dict]:
+    """
+    Returns a dict snapshot of a chat space: meta + members + messages
+    (with attachment metadata and reaction counts). Used by both the JSON
+    and Markdown export routes — keep this serialization shape stable.
+    """
+    space = find_by_id(chat_space_id)
+    if space is None:
+        return None
+    db = SessionLocal()
+    try:
+        members = [
+            {
+                "party": m.party,
+                "identifier": m.identifier,
+                "display_name": m.display_name,
+                "last_read_message_id": m.last_read_message_id,
+                "last_seen_at": (m.last_seen_at.replace(tzinfo=timezone.utc).isoformat()
+                                 if m.last_seen_at else None),
+            }
+            for m in db.query(ChatMember).filter_by(chat_space_id=chat_space_id).all()
+        ]
+    finally:
+        db.close()
+    messages = list_messages(chat_space_id=chat_space_id, limit=10000)
+    return {
+        "chat_space": {
+            "id": space.id,
+            "creator_username": space.creator_username,
+            "creator_email": space.creator_email,
+            "campaign_slug": space.campaign_slug,
+            "campaign_name": space.campaign_name,
+            "brand_name": space.brand_name,
+            "status": space.status,
+            "created_at": space.created_at.replace(tzinfo=timezone.utc).isoformat()
+                          if space.created_at else None,
+            "last_message_at": space.last_message_at.replace(tzinfo=timezone.utc).isoformat()
+                               if space.last_message_at else None,
+            "archived_at": space.archived_at.replace(tzinfo=timezone.utc).isoformat()
+                           if space.archived_at else None,
+        },
+        "members": members,
+        "messages": messages,
+    }
+
+
+def transcript_to_markdown(transcript: dict) -> str:
+    """Render an export_transcript() result as a human-readable Markdown doc."""
+    s = transcript["chat_space"]
+    lines: list[str] = []
+    lines.append(f"# Chat transcript — {s.get('campaign_name') or 'Untitled campaign'}")
+    lines.append("")
+    lines.append(f"- **Creator:** @{s.get('creator_username') or '?'}"
+                 + (f" ({s['creator_email']})" if s.get("creator_email") else ""))
+    lines.append(f"- **Brand:** {s.get('brand_name') or '—'}")
+    lines.append(f"- **Status:** {s.get('status')}")
+    lines.append(f"- **Created:** {s.get('created_at') or '—'}")
+    if s.get("archived_at"):
+        lines.append(f"- **Archived:** {s['archived_at']}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    if not transcript["messages"]:
+        lines.append("_No messages._")
+        return "\n".join(lines) + "\n"
+    for m in transcript["messages"]:
+        sender = m.get("sender") or m.get("party")
+        when = m.get("created_at") or ""
+        lines.append(f"**{sender}** · _{m.get('party')}_ · {when}")
+        body = (m.get("body") or "").strip()
+        if body:
+            for ln in body.splitlines():
+                lines.append(f"> {ln}")
+        for a in m.get("attachments") or []:
+            lines.append(f"> 📎 _{a.get('filename')}_ ({a.get('content_type')}, {a.get('size')} bytes)")
+        reactions = m.get("reactions") or {}
+        if reactions:
+            lines.append("> " + " ".join(f"{k}×{v}" for k, v in reactions.items()))
+        lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +803,25 @@ def creator_identifier_for(space: ChatSpace) -> str:
 
 def brand_identifier_for(space: ChatSpace) -> str:
     return space.workspace_team_id or _slug(space.brand_name) or "brand"
+
+
+def read_state_for_space(chat_space_id: int) -> dict[str, int]:
+    """
+    Map of party -> highest `last_read_message_id` among that party's
+    members. Used by the chat UI to render per-message read receipts.
+    Returns 0 for parties with no recorded read.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.query(ChatMember).filter_by(chat_space_id=chat_space_id).all()
+        out: dict[str, int] = {}
+        for r in rows:
+            last = r.last_read_message_id or 0
+            if last > out.get(r.party, 0):
+                out[r.party] = last
+        return out
+    finally:
+        db.close()
 
 
 def members_iter(chat_space_id: int) -> Iterable[ChatMember]:
