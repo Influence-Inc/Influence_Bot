@@ -12,11 +12,13 @@ import logging
 from sqlalchemy import (
     Column,
     Integer,
+    BigInteger,
     String,
     Text,
     DateTime,
     Boolean,
     ForeignKey,
+    Index,
     UniqueConstraint,
     create_engine,
     inspect,
@@ -298,3 +300,148 @@ class PaymentRecord(Base):
             name="uq_payment_record",
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Creator <-> Brand chat spaces
+#
+# Triggered when a brand clicks "Request Changes" on a review notification.
+# One chat space per (creator, campaign, brand) — reused across review
+# resubmissions and archived when the campaign ends.
+# ---------------------------------------------------------------------------
+
+
+class ChatSpace(Base):
+    __tablename__ = "chat_spaces"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Composite key for reuse: see services.chat_service.compute_reuse_key.
+    # SHA-256 hex of "{creator_key}|{campaign_key}|{brand_key}".
+    reuse_key = Column(String(64), nullable=False, index=True)
+
+    creator_username = Column(String(255), nullable=False)
+    creator_email = Column(String(320), nullable=True)
+    campaign_slug = Column(String(255), nullable=True)
+    campaign_name = Column(String(255), nullable=True)
+    brand_name = Column(String(255), nullable=True)
+
+    # Slack workspace + brand-install identifiers (best-effort; nullable so a
+    # chat can still exist when the brand hasn't installed the bot).
+    workspace_team_id = Column(String(255), nullable=True)
+    brand_install_id = Column(Integer, ForeignKey("slack_installations.id"), nullable=True)
+
+    # Latest associated review (updated each time the creator resubmits).
+    latest_review_id = Column(Integer, ForeignKey("review_submissions.id"), nullable=True)
+
+    # active | archived
+    status = Column(String(20), nullable=False, default="active")
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_message_at = Column(DateTime, nullable=True)
+    archived_at = Column(DateTime, nullable=True)
+
+    # Track the brand Slack message that hosts the "Open Chat Space" button,
+    # so we can chat_update it / post follow-ups in the same channel.
+    brand_slack_channel = Column(String(255), nullable=True)
+    brand_slack_ts = Column(String(255), nullable=True)
+
+    members = relationship("ChatMember", back_populates="space", cascade="all, delete-orphan")
+    messages = relationship("ChatMessage", back_populates="space", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_chat_spaces_reuse_active", "reuse_key", "status"),
+    )
+
+
+class ChatMember(Base):
+    """
+    A party with access to a chat space. `party` is 'creator' | 'brand' |
+    'admin'. `identifier` is creator email for creators, slack team_id for
+    brand (anyone in the brand workspace channel can enter), and an admin
+    token id for admins. Display name is set on first entry.
+    """
+    __tablename__ = "chat_members"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_space_id = Column(Integer, ForeignKey("chat_spaces.id"), nullable=False, index=True)
+    party = Column(String(20), nullable=False)
+    identifier = Column(String(320), nullable=False)
+    display_name = Column(String(255), nullable=True)
+
+    last_read_message_id = Column(Integer, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    joined_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    space = relationship("ChatSpace", back_populates="members")
+
+    __table_args__ = (
+        UniqueConstraint("chat_space_id", "party", "identifier", name="uq_chat_member"),
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_space_id = Column(Integer, ForeignKey("chat_spaces.id"), nullable=False, index=True)
+    sender_party = Column(String(20), nullable=False)  # creator | brand | admin | system
+    sender_identifier = Column(String(320), nullable=True)
+    sender_display_name = Column(String(255), nullable=True)
+    body = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    space = relationship("ChatSpace", back_populates="messages")
+    attachments = relationship("ChatAttachment", back_populates="message", cascade="all, delete-orphan")
+    reactions = relationship("ChatReaction", back_populates="message", cascade="all, delete-orphan")
+
+
+class ChatAttachment(Base):
+    __tablename__ = "chat_attachments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message_id = Column(Integer, ForeignKey("chat_messages.id"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    content_type = Column(String(127), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False, default=0)
+    storage_path = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    message = relationship("ChatMessage", back_populates="attachments")
+
+
+class ChatReaction(Base):
+    __tablename__ = "chat_reactions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    message_id = Column(Integer, ForeignKey("chat_messages.id"), nullable=False, index=True)
+    party = Column(String(20), nullable=False)
+    identifier = Column(String(320), nullable=False)
+    emoji = Column(String(32), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    message = relationship("ChatMessage", back_populates="reactions")
+
+    __table_args__ = (
+        UniqueConstraint("message_id", "party", "identifier", "emoji", name="uq_chat_reaction"),
+    )
+
+
+class ChatSession(Base):
+    """
+    Server-side session record backing the magic-link-to-cookie flow.
+    The cookie carries `session_id` and an HMAC; lookup validates against
+    this row (revocable, expirable).
+    """
+    __tablename__ = "chat_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_space_id = Column(Integer, ForeignKey("chat_spaces.id"), nullable=False, index=True)
+    party = Column(String(20), nullable=False)
+    identifier = Column(String(320), nullable=False)
+    display_name = Column(String(255), nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)

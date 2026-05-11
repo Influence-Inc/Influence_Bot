@@ -15,6 +15,8 @@ from models.models import (
     SessionLocal,
 )
 from services.email_service import EmailService
+from services import chat_service
+from services.chat_notifications import notify_chat_space_created
 from templates.email_templates import (
     video_approved,
     video_changes_requested,
@@ -410,6 +412,21 @@ def register_actions(app):
             email_sent = _email_service.send_approval_notification(
                 creator_email, template
             )
+
+        # Open (or reuse) the persistent chat space for this creator + campaign
+        # and notify both sides. Failures here must not block the rest of the
+        # Request-Changes flow.
+        chat_space_id = None
+        try:
+            team = body.get("team") or {}
+            space = chat_service.get_or_create_for_review(
+                review_id, workspace_team_id=team.get("id"),
+            )
+            if space is not None:
+                chat_space_id = space.id
+                notify_chat_space_created(space.id)
+        except Exception as exc:
+            logger.exception("Failed to open chat space for review %s: %s", review_id, exc)
 
         # Update the original Slack message.
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
