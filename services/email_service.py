@@ -1,6 +1,11 @@
 """
 Email service for INFLUENCE Bot.
-Sends professional emails from jennifer@useinfluence.xyz via SMTP.
+
+Two backends:
+  - Resend HTTP API (preferred, set RESEND_API_KEY) — works on Railway because
+    it uses HTTPS port 443.
+  - Legacy SMTP (Gmail) — used only if RESEND_API_KEY is not set. Often blocked
+    by Railway's outbound port filtering, surfacing as "timed out" errors.
 """
 
 import logging
@@ -10,12 +15,15 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from enum import Enum
 
+import requests
 from sqlalchemy.exc import IntegrityError
 
 from config import Config
 from models.models import SessionLocal, EmailLog
 
 logger = logging.getLogger(__name__)
+
+RESEND_API_URL = "https://api.resend.com/emails"
 
 
 class EmailSendResult(str, Enum):
@@ -43,6 +51,8 @@ class _IPv4SMTP(smtplib.SMTP):
 
 class EmailService:
     def __init__(self):
+        self.resend_api_key = Config.RESEND_API_KEY
+        self.resend_from = Config.RESEND_FROM
         self.host = Config.SMTP_HOST
         self.port = Config.SMTP_PORT
         self.username = Config.SMTP_USERNAME
@@ -50,11 +60,50 @@ class EmailService:
         self.from_name = Config.EMAIL_FROM_NAME
 
     def send_email(self, to_email: str, subject: str, body: str, cc: str = None) -> bool:
-        """Send an email via SMTP."""
+        """Send an email. Uses Resend HTTP API when configured, else SMTP."""
+        if self.resend_api_key:
+            return self._send_via_resend(to_email, subject, body, cc)
+        return self._send_via_smtp(to_email, subject, body, cc)
+
+    def _send_via_resend(self, to_email: str, subject: str, body: str, cc: str = None) -> bool:
+        payload = {
+            "from": self.resend_from,
+            "to": [to_email],
+            "subject": subject,
+            "text": body,
+        }
+        if cc:
+            payload["cc"] = [cc]
+
+        try:
+            resp = requests.post(
+                RESEND_API_URL,
+                headers={
+                    "Authorization": f"Bearer {self.resend_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=15,
+            )
+        except requests.RequestException as e:
+            logger.error(f"Failed to send email to {to_email} via Resend: {e}")
+            return False
+
+        if resp.status_code >= 300:
+            logger.error(
+                "Resend rejected email to %s: %s %s",
+                to_email, resp.status_code, resp.text[:300],
+            )
+            return False
+
+        logger.info(f"Email sent to {to_email} via Resend: {subject}")
+        return True
+
+    def _send_via_smtp(self, to_email: str, subject: str, body: str, cc: str = None) -> bool:
         if not self.password:
             logger.error(
-                "SMTP_PASSWORD is not set; cannot send email to %s. "
-                "Set SMTP_PASSWORD in Railway (use a Gmail App Password).",
+                "Neither RESEND_API_KEY nor SMTP_PASSWORD is set; cannot send "
+                "email to %s. Recommended: set RESEND_API_KEY in Railway.",
                 to_email,
             )
             return False

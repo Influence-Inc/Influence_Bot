@@ -60,6 +60,16 @@ class Config:
     )
 
     # --- Email (jennifer@useinfluence.xyz) ---
+    # Preferred: Resend HTTP API. Set RESEND_API_KEY and the bot will use it
+    # instead of SMTP. Resend works over HTTPS so Railway's outbound port
+    # filtering doesn't block it (unlike SMTP/587).
+    RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+    RESEND_FROM = os.environ.get(
+        "RESEND_FROM",
+        "Jennifer - INFLUENCE <jennifer@useinfluence.xyz>",
+    )
+
+    # Legacy SMTP fallback. Used only when RESEND_API_KEY is not set.
     SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
     SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "jennifer@useinfluence.xyz")
