@@ -103,8 +103,33 @@ class WebhookHandler:
                 payload,
                 ["milestones", "deliverables", "deadline", "upload_followup"],
             )
+        elif event_type in ("campaign_ended", "campaign_completed", "campaign_archived"):
+            return self._handle_campaign_ended(payload)
         else:
             logger.warning(f"Unknown webhook event type: {event_type}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Campaign lifecycle
+    # ------------------------------------------------------------------
+    def _handle_campaign_ended(self, payload: dict) -> bool:
+        """Archive any chat spaces tied to a campaign that has ended."""
+        try:
+            from services.chat_service import archive_for_campaign
+
+            campaign = payload.get("campaign") or {}
+            archived = archive_for_campaign(
+                campaign_slug=campaign.get("slug"),
+                campaign_name=campaign.get("name"),
+                brand_name=campaign.get("brandName") or campaign.get("brand_name"),
+            )
+            logger.info(
+                "Archived %d chat space(s) for campaign=%s (slug=%s)",
+                archived, campaign.get("name"), campaign.get("slug"),
+            )
+            return True
+        except Exception as exc:
+            logger.exception("Failed to archive chat spaces on campaign end: %s", exc)
             return False
 
     # ------------------------------------------------------------------

@@ -27,6 +27,7 @@ from models.models import init_db
 from bot.handlers import register_event_handlers
 from bot.commands import register_commands
 from bot.actions import register_actions
+from bot.chat_routes import register_chat_routes
 from services.email_service import EmailService
 from services.reelstats_api import ReelStatsAPI
 from services.webhook_handler import WebhookHandler
@@ -90,6 +91,9 @@ register_actions(bolt_app)
 # ---------------------------------------------------------------------------
 flask_app = Flask(__name__)
 handler = SlackRequestHandler(bolt_app)
+
+# Creator <-> brand chat space routes.
+register_chat_routes(flask_app)
 
 
 @flask_app.route("/slack/events", methods=["POST"])

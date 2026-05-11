@@ -81,7 +81,46 @@ class Config:
     else:
         POLL_INTERVAL_SECONDS = 60
 
+    # --- Creator <-> Brand chat spaces ---
+    # Public base URL the bot is reachable at (used to build magic links sent
+    # to creators by email and brand "Open Chat Space" buttons in Slack).
+    # Falls back to deriving from SLACK_OAUTH_REDIRECT_URI if set, else None
+    # (chat magic links won't work until configured).
+    @staticmethod
+    def _derive_public_base_url() -> str | None:
+        explicit = os.environ.get("PUBLIC_BASE_URL")
+        if explicit:
+            return explicit.rstrip("/")
+        redirect = os.environ.get("SLACK_OAUTH_REDIRECT_URI")
+        if not redirect:
+            return None
+        # e.g. https://host.example/slack/oauth_redirect -> https://host.example
+        from urllib.parse import urlparse
+        parsed = urlparse(redirect)
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    # Resolved lazily through PUBLIC_BASE_URL property.
+    CHAT_SECRET_KEY = (
+        os.environ.get("CHAT_SECRET_KEY")
+        or os.environ.get("SLACK_SIGNING_SECRET")
+    )
+    CHAT_ADMIN_TOKEN = os.environ.get("CHAT_ADMIN_TOKEN")
+    CHAT_UPLOADS_DIR = os.environ.get(
+        "CHAT_UPLOADS_DIR", "/tmp/influence_chat_attachments"
+    )
+    CHAT_MAX_ATTACHMENT_BYTES = int(
+        os.environ.get("CHAT_MAX_ATTACHMENT_BYTES", str(10 * 1024 * 1024))
+    )
+    # Magic-link / session lifetimes (seconds).
+    CHAT_MAGIC_LINK_TTL = int(os.environ.get("CHAT_MAGIC_LINK_TTL", str(7 * 24 * 3600)))
+    CHAT_SESSION_TTL = int(os.environ.get("CHAT_SESSION_TTL", str(14 * 24 * 3600)))
+
     # --- Testing ---
     # If set, the bot only processes the campaign with this exact name.
     # Leave empty/unset in production to process all campaigns.
     TEST_CAMPAIGN_NAME = os.environ.get("TEST_CAMPAIGN_NAME") or None
+
+
+Config.PUBLIC_BASE_URL = Config._derive_public_base_url()
