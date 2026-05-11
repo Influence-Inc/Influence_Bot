@@ -35,6 +35,7 @@ from models.models import (
     SessionLocal,
 )
 from services.brand_routing import find_install_for_brand_name
+from services.chat_pubsub import publish as _pubsub_publish
 from utils.chat_tokens import revoke_sessions_for_space
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,7 @@ def upsert_member(
 
 
 def mark_read(*, chat_space_id: int, party: str, identifier: str, up_to_message_id: int) -> None:
+    changed = False
     db = SessionLocal()
     try:
         row = (
@@ -245,10 +247,21 @@ def mark_read(*, chat_space_id: int, party: str, identifier: str, up_to_message_
             return
         if row.last_read_message_id is None or up_to_message_id > row.last_read_message_id:
             row.last_read_message_id = up_to_message_id
+            changed = True
         row.last_seen_at = datetime.now(timezone.utc)
         db.commit()
     finally:
         db.close()
+    if changed:
+        _pubsub_publish(
+            chat_space_id,
+            "read",
+            {
+                "party": party,
+                "identifier": identifier,
+                "last_read_message_id": up_to_message_id,
+            },
+        )
 
 
 def unread_count(*, chat_space_id: int, party: str, identifier: str) -> int:
@@ -284,7 +297,14 @@ def post_message(
     sender_identifier: Optional[str],
     sender_display_name: Optional[str],
     body: str,
+    publish: bool = True,
 ) -> Optional[ChatMessage]:
+    """
+    Persist a new message. Set `publish=False` if the caller is about to
+    attach a file and wants to broadcast the complete message (body +
+    attachments) via `publish_message(msg.id)` once the attachment row is
+    written; that way SSE subscribers see one event with everything.
+    """
     body = (body or "").strip()
     if len(body) > _MAX_BODY:
         body = body[:_MAX_BODY]
@@ -308,9 +328,47 @@ def post_message(
         db.commit()
         db.refresh(msg)
         db.expunge(msg)
-        return msg
     finally:
         db.close()
+
+    if publish:
+        publish_message(msg.id)
+    return msg
+
+
+def publish_message(message_id: int) -> None:
+    """Emit the full serialized form of an existing message to SSE subscribers."""
+    db = SessionLocal()
+    try:
+        msg = db.query(ChatMessage).get(message_id)
+        if msg is None:
+            return
+        chat_space_id = msg.chat_space_id
+        reactions: dict[str, int] = {}
+        for r in db.query(ChatReaction).filter(ChatReaction.message_id == message_id).all():
+            reactions[r.emoji] = reactions.get(r.emoji, 0) + 1
+        attachments = [
+            {
+                "id": a.id,
+                "filename": a.filename,
+                "content_type": a.content_type,
+                "size": a.size_bytes,
+            }
+            for a in db.query(ChatAttachment).filter(ChatAttachment.message_id == message_id).all()
+        ]
+        payload = {
+            "id": msg.id,
+            "party": msg.sender_party,
+            "sender": msg.sender_display_name or msg.sender_identifier or msg.sender_party,
+            "body": msg.body,
+            "created_at": msg.created_at.replace(tzinfo=timezone.utc).isoformat()
+            if msg.created_at else None,
+            "reactions": reactions,
+            "attachments": attachments,
+        }
+    finally:
+        db.close()
+    _pubsub_publish(chat_space_id, "message", payload)
 
 
 def list_messages(
@@ -448,6 +506,11 @@ def toggle_reaction(
         return False
     db = SessionLocal()
     try:
+        msg = db.query(ChatMessage).get(message_id)
+        if msg is None:
+            return False
+        chat_space_id = msg.chat_space_id
+
         row = (
             db.query(ChatReaction)
             .filter_by(
@@ -458,17 +521,30 @@ def toggle_reaction(
         if row is not None:
             db.delete(row)
             db.commit()
-            return False
-        db.add(ChatReaction(
-            message_id=message_id, party=party, identifier=identifier, emoji=emoji,
-        ))
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-        return True
+            now_present = False
+        else:
+            db.add(ChatReaction(
+                message_id=message_id, party=party, identifier=identifier, emoji=emoji,
+            ))
+            try:
+                db.commit()
+                now_present = True
+            except IntegrityError:
+                db.rollback()
+                now_present = True
+
+        counts: dict[str, int] = {}
+        for r in db.query(ChatReaction).filter(ChatReaction.message_id == message_id).all():
+            counts[r.emoji] = counts.get(r.emoji, 0) + 1
     finally:
         db.close()
+
+    _pubsub_publish(
+        chat_space_id,
+        "reaction",
+        {"message_id": message_id, "counts": counts},
+    )
+    return now_present
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +669,25 @@ def creator_identifier_for(space: ChatSpace) -> str:
 
 def brand_identifier_for(space: ChatSpace) -> str:
     return space.workspace_team_id or _slug(space.brand_name) or "brand"
+
+
+def read_state_for_space(chat_space_id: int) -> dict[str, int]:
+    """
+    Map of party -> highest `last_read_message_id` among that party's
+    members. Used by the chat UI to render per-message read receipts.
+    Returns 0 for parties with no recorded read.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.query(ChatMember).filter_by(chat_space_id=chat_space_id).all()
+        out: dict[str, int] = {}
+        for r in rows:
+            last = r.last_read_message_id or 0
+            if last > out.get(r.party, 0):
+                out[r.party] = last
+        return out
+    finally:
+        db.close()
 
 
 def members_iter(chat_space_id: int) -> Iterable[ChatMember]:

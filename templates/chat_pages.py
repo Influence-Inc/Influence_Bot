@@ -47,6 +47,14 @@ CHAT_PAGE = """\
     .emoji-pop button { background:transparent; border:0; font-size:18px; cursor:pointer; padding:4px; }
     .archived { background:#fef2f2; color:#991b1b; padding:10px 20px; font-size:13px; }
     .unread-pill { display:inline-block; background:#ef4444; color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; margin-left:6px; }
+    .receipts { font-size:11px; color:#9ca3af; margin-left:6px; }
+    .receipts.read { color:#2563eb; }
+    .typing-bar { font-size:12px; color:#6b7280; padding:4px 16px; min-height:18px; max-width:780px; margin:0 auto; width:100%; box-sizing:border-box; }
+    .typing-bar.active { color:#4b5563; }
+    .typing-bar .dot { display:inline-block; width:4px; height:4px; background:#9ca3af; border-radius:50%; margin:0 1px; animation:typing 1.2s infinite; }
+    .typing-bar .dot:nth-child(2) { animation-delay:.15s; }
+    .typing-bar .dot:nth-child(3) { animation-delay:.3s; }
+    @keyframes typing { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
   </style>
 </head>
 <body data-space-id="{{ space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status == 'archived' else 'false' }}">
@@ -59,6 +67,7 @@ CHAT_PAGE = """\
   <div class="archived">This campaign has ended — chat is archived and read-only.</div>
   {% endif %}
   <main id="messages"></main>
+  <div class="typing-bar" id="typingBar"></div>
   <footer class="compose">
     <form class="compose-inner" id="composeForm" autocomplete="off">
       <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
@@ -72,6 +81,7 @@ CHAT_PAGE = """\
     </div>
   </footer>
 
+<script id="initial-read-state" type="application/json">{{ initial_read_state | tojson }}</script>
 <script>
 (function() {
   const bodyEl = document.body;
@@ -86,19 +96,42 @@ CHAT_PAGE = """\
   const fileInput = document.getElementById('fileInput');
   const emojiBtn = document.getElementById('emojiBtn');
   const emojiPop = document.getElementById('emojiPop');
+  const typingBar = document.getElementById('typingBar');
 
   let lastId = 0;
-  let polling = false;
+  // party -> highest last_read_message_id seen for that party.
+  const readState = JSON.parse(document.getElementById('initial-read-state').textContent || '{}');
+  // identifier -> { name, until_ts } for currently-typing remote users.
+  const typingUsers = new Map();
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
-  function renderMessage(m) {
+  function receiptHtml(m) {
+    if (m.party !== selfParty) return '';
+    // For a message I sent: read by the OTHER party if any of their members
+    // has last_read >= m.id.
+    let readByOther = false;
+    for (const [p, last] of Object.entries(readState)) {
+      if (p !== selfParty && last >= m.id) { readByOther = true; break; }
+    }
+    return '<span class="receipts' + (readByOther ? ' read' : '') + '">' +
+      (readByOther ? '✓✓' : '✓') + '</span>';
+  }
+
+  function renderMessage(m, opts) {
+    const upsert = opts && opts.upsert;
+    let div = messagesEl.querySelector('[data-id="' + m.id + '"]');
     const mine = m.party === selfParty;
-    const div = document.createElement('div');
-    div.className = 'msg ' + (mine ? 'me' : 'them');
-    div.dataset.id = m.id;
+    if (!div) {
+      div = document.createElement('div');
+      div.className = 'msg ' + (mine ? 'me' : 'them');
+      div.dataset.id = m.id;
+      messagesEl.appendChild(div);
+    } else if (!upsert) {
+      return;
+    }
     let attHtml = '';
     if (m.attachments && m.attachments.length) {
       attHtml = '<div class="attachments">' + m.attachments.map(a => {
@@ -122,39 +155,125 @@ CHAT_PAGE = """\
       '<div class="who">' + escapeHtml(m.sender || m.party) + '</div>' +
       '<div class="body">' + escapeHtml(m.body) + '</div>' +
       attHtml + reactHtml +
-      '<div class="ts">' + escapeHtml(ts) + '</div>' +
+      '<div class="ts">' + escapeHtml(ts) + receiptHtml(m) + '</div>' +
       '</div>';
-    messagesEl.appendChild(div);
     if (m.id > lastId) lastId = m.id;
   }
 
+  function rerenderReceiptsOnly() {
+    // Cheap pass: only update the receipt spans for messages I sent.
+    messagesEl.querySelectorAll('.msg.me').forEach(div => {
+      const id = parseInt(div.dataset.id, 10);
+      const span = div.querySelector('.receipts');
+      if (!span) return;
+      let readByOther = false;
+      for (const [p, last] of Object.entries(readState)) {
+        if (p !== selfParty && last >= id) { readByOther = true; break; }
+      }
+      span.className = 'receipts' + (readByOther ? ' read' : '');
+      span.textContent = readByOther ? '✓✓' : '✓';
+    });
+  }
+
   function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
     window.scrollTo(0, document.body.scrollHeight);
   }
 
-  async function poll() {
-    if (polling) return;
-    polling = true;
+  function sendRead() {
+    if (!lastId) return;
+    fetch('/chat/' + spaceId + '/read', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ up_to: lastId }),
+    }).catch(() => {});
+  }
+
+  async function backfill() {
     try {
       const r = await fetch('/chat/' + spaceId + '/messages?since=' + lastId, { credentials: 'same-origin' });
       if (!r.ok) return;
       const data = await r.json();
       if (data.messages && data.messages.length) {
-        for (const m of data.messages) renderMessage(m);
+        for (const m of data.messages) renderMessage(m, { upsert: true });
         scrollToBottom();
-        if (lastId > 0) {
-          fetch('/chat/' + spaceId + '/read', {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ up_to: lastId }),
-          });
-        }
+        sendRead();
       }
     } catch (e) { /* swallow */ }
-    polling = false;
   }
 
+  function renderTypingBar() {
+    const now = Date.now();
+    const names = [];
+    for (const [ident, info] of typingUsers) {
+      if (info.until_ts < now) typingUsers.delete(ident);
+      else names.push(info.name);
+    }
+    if (!names.length) {
+      typingBar.textContent = '';
+      typingBar.classList.remove('active');
+      return;
+    }
+    typingBar.classList.add('active');
+    const label = names.length === 1 ? names[0] + ' is typing' : names.join(', ') + ' are typing';
+    typingBar.innerHTML = escapeHtml(label) + ' <span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  }
+  setInterval(renderTypingBar, 1000);
+
+  // --- Live updates via SSE, with periodic backfill as a safety net. ---
+  let sse = null;
+  function connectSSE() {
+    if (typeof EventSource === 'undefined') return;
+    try { sse = new EventSource('/chat/' + spaceId + '/stream'); } catch (e) { return; }
+    sse.addEventListener('hello', () => backfill());
+    sse.addEventListener('message', (ev) => {
+      try {
+        const m = JSON.parse(ev.data);
+        renderMessage(m, { upsert: true });
+        scrollToBottom();
+        sendRead();
+      } catch (e) {}
+    });
+    sse.addEventListener('reaction', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const div = messagesEl.querySelector('[data-id="' + d.message_id + '"] .reactions');
+        if (!div) { backfill(); return; }
+        let html = '';
+        for (const [k, n] of Object.entries(d.counts || {})) {
+          html += '<button class="react" data-emoji="' + escapeHtml(k) + '" data-msg="' + d.message_id + '">' + escapeHtml(k) + ' ' + n + '</button>';
+        }
+        if (!archived) html += '<button class="react add" data-msg="' + d.message_id + '">+</button>';
+        div.innerHTML = html;
+      } catch (e) {}
+    });
+    sse.addEventListener('read', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const current = readState[d.party] || 0;
+        if (d.last_read_message_id > current) {
+          readState[d.party] = d.last_read_message_id;
+          rerenderReceiptsOnly();
+        }
+      } catch (e) {}
+    });
+    sse.addEventListener('typing', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.party === selfParty) return;
+        const key = d.party + ':' + d.identifier;
+        typingUsers.set(key, { name: d.display_name || d.party, until_ts: Date.now() + 5000 });
+        renderTypingBar();
+      } catch (e) {}
+    });
+    sse.onerror = () => {
+      // Browser will auto-reconnect; if it can't, our setInterval backfill
+      // below keeps the chat usable.
+    };
+  }
+  connectSSE();
+  setInterval(backfill, 30000);
+
+  // --- Compose + send ---
   async function sendMessage(body, file) {
     const form = new FormData();
     if (body) form.append('body', body);
@@ -165,7 +284,11 @@ CHAT_PAGE = """\
       const r = await fetch('/chat/' + spaceId + '/messages', {
         method: 'POST', credentials: 'same-origin', body: form,
       });
-      if (r.ok) { bodyInput.value = ''; await poll(); }
+      if (r.ok) {
+        bodyInput.value = '';
+        // The SSE `message` event will render the new bubble; if SSE is
+        // down, the 30s backfill will catch up.
+      }
     } finally { sendBtn.disabled = archived; }
   }
 
@@ -173,8 +296,19 @@ CHAT_PAGE = """\
     e.preventDefault();
     sendMessage(bodyInput.value.trim(), null);
   });
+
+  let lastTypingPing = 0;
+  function pingTyping() {
+    if (archived) return;
+    const now = Date.now();
+    if (now - lastTypingPing < 2000) return;
+    lastTypingPing = now;
+    fetch('/chat/' + spaceId + '/typing', { method: 'POST', credentials: 'same-origin' })
+      .catch(() => {});
+  }
   bodyInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composeForm.requestSubmit(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composeForm.requestSubmit(); return; }
+    pingTyping();
   });
   fileBtn.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
@@ -201,7 +335,7 @@ CHAT_PAGE = """\
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emoji }),
-      }).then(poll);
+      });
     } else {
       bodyInput.value += emoji;
       bodyInput.focus();
@@ -224,11 +358,10 @@ CHAT_PAGE = """\
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ emoji: btn.dataset.emoji }),
-    }).then(poll);
+    });
   });
 
-  poll().then(scrollToBottom);
-  setInterval(poll, 3000);
+  backfill().then(scrollToBottom);
 })();
 </script>
 </body>
