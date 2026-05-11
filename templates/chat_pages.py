@@ -395,12 +395,20 @@ ADMIN_DASHBOARD = """\
 body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5f7; margin:0; }
 .container { max-width:1100px; margin:0 auto; padding:24px; }
 h1 { font-size:20px; margin:0 0 16px; }
-.stats { display:flex; gap:12px; margin-bottom:16px; }
-.stat { flex:1; background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; }
+.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+.stat { background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; }
 .stat .v { font-size:22px; font-weight:600; }
 .stat .l { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.05em; }
-form.search { display:flex; gap:8px; margin-bottom:12px; }
-form.search input, form.search select { padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; }
+.panel { background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; margin-bottom:16px; }
+.panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:#6b7280; margin:0 0 8px; font-weight:500; }
+.panel ol { margin:0; padding-left:18px; font-size:13px; color:#1f2937; }
+.panel li + li { margin-top:4px; }
+form.search { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+form.search input, form.search select { padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; }
+form.search input[type=text] { min-width:240px; flex:1; }
+.chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+.chips a { font-size:12px; padding:4px 10px; border-radius:14px; background:#fff; border:1px solid #d1d5db; color:#1f2937; text-decoration:none; }
+.chips a.on { background:#111827; color:#fff; border-color:#111827; }
 table { width:100%; background:#fff; border:1px solid #e5e5ea; border-radius:10px; border-collapse:separate; border-spacing:0; overflow:hidden; }
 th, td { text-align:left; padding:10px 12px; font-size:13px; border-bottom:1px solid #f1f1f3; }
 th { background:#f9fafb; font-weight:500; color:#6b7280; }
@@ -416,16 +424,31 @@ a.row { color:#1d4ed8; text-decoration:none; }
   <div class="stat"><div class="v">{{ stats.active }}</div><div class="l">Active</div></div>
   <div class="stat"><div class="v">{{ stats.archived }}</div><div class="l">Archived</div></div>
   <div class="stat"><div class="v">{{ stats.active_creators }}</div><div class="l">Active creators</div></div>
+  <div class="stat"><div class="v">{{ stats.recently_active }}</div><div class="l">Active 7d</div></div>
 </div>
+{% if stats.top_revisions %}
+<div class="panel">
+  <h2>Campaigns with most revisions</h2>
+  <ol>
+  {% for r in stats.top_revisions %}
+    <li>{{ r.campaign_name or '—' }}{% if r.brand_name %} <span style="color:#6b7280">· {{ r.brand_name }}</span>{% endif %} — <b>{{ r.revisions }}</b></li>
+  {% endfor %}
+  </ol>
+</div>
+{% endif %}
 <form class="search" method="GET">
   <input type="text" name="q" value="{{ query.q or '' }}" placeholder="Search creator / campaign / brand…">
-  <select name="status">
-    <option value="">All statuses</option>
-    <option value="active" {% if query.status == 'active' %}selected{% endif %}>Active</option>
-    <option value="archived" {% if query.status == 'archived' %}selected{% endif %}>Archived</option>
-  </select>
+  <input type="text" name="brand" value="{{ query.brand or '' }}" placeholder="Brand exact match (optional)">
   <button type="submit">Filter</button>
+  {% if query.q or query.brand or query.status %}
+    <a href="/admin/chats" style="padding:8px 10px;color:#6b7280;text-decoration:none">Clear</a>
+  {% endif %}
 </form>
+<div class="chips">
+  <a href="/admin/chats" class="{% if not query.status %}on{% endif %}">All</a>
+  <a href="/admin/chats?status=active" class="{% if query.status == 'active' %}on{% endif %}">Active</a>
+  <a href="/admin/chats?status=archived" class="{% if query.status == 'archived' %}on{% endif %}">Archived</a>
+</div>
 <table>
 <thead><tr><th>Creator</th><th>Campaign</th><th>Brand</th><th>Status</th><th>Last message</th><th></th></tr></thead>
 <tbody>
@@ -456,21 +479,50 @@ body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5
 .crumbs a { color:#1d4ed8; text-decoration:none; }
 h1 { font-size:18px; margin:0 0 4px; }
 .meta { font-size:13px; color:#6b7280; margin-bottom:12px; }
+.toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px; }
+.toolbar a, .toolbar button { font-size:13px; padding:7px 12px; border-radius:8px; text-decoration:none; border:1px solid #d1d5db; background:#fff; color:#1f2937; cursor:pointer; }
+.toolbar form { display:inline; margin:0; }
+.toolbar .danger { color:#991b1b; border-color:#fecaca; background:#fff1f2; }
+.toolbar .primary { color:#fff; background:#111827; border-color:#111827; }
 .archived-note { background:#fef2f2; color:#991b1b; padding:8px 12px; border-radius:8px; font-size:13px; margin-bottom:12px; }
 .msg { background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:10px 14px; margin:8px 0; }
+.msg.party-admin { background:#fffbeb; border-color:#fde68a; }
 .msg .who { font-size:11px; color:#6b7280; margin-bottom:2px; }
-.msg .body { white-space:pre-wrap; font-size:14px; }
+.msg .body { white-space:pre-wrap; font-size:14px; word-break:break-word; }
 .msg .ts { font-size:11px; color:#9ca3af; margin-top:4px; }
 .msg img { max-width:240px; border-radius:8px; margin-top:6px; display:block; }
 .reactions { margin-top:6px; font-size:12px; color:#6b7280; }
+.compose { background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:10px; margin-top:14px; }
+.compose textarea { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #d1d5db; font-family:inherit; font-size:14px; min-height:60px; box-sizing:border-box; resize:vertical; }
+.compose .row { display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px; }
+.compose .row .hint { font-size:11px; color:#6b7280; }
+.compose button { background:#111827; color:#fff; border:0; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
 </style></head><body>
 <div class="container">
 <div class="crumbs"><a href="/admin/chats">← All chat spaces</a></div>
 <h1>{{ space.campaign_name or '—' }} · {{ space.brand_name or '—' }}</h1>
 <div class="meta">Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} · status: {{ space.status }} · created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
-{% if space.status == 'archived' %}<div class="archived-note">This chat is archived.</div>{% endif %}
+
+<div class="toolbar">
+  <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
+  <a href="/admin/chats/{{ space.id }}/export.json" download>Export JSON</a>
+  {% if space.status == 'active' %}
+    <form method="POST" action="/admin/chats/{{ space.id }}/archive">
+      <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+      <button type="submit" class="danger" onclick="return confirm('Archive this chat? Both parties will lose access until it is reopened.');">Archive</button>
+    </form>
+  {% else %}
+    <form method="POST" action="/admin/chats/{{ space.id }}/reopen">
+      <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+      <button type="submit" class="primary">Reopen</button>
+    </form>
+  {% endif %}
+</div>
+
+{% if space.status == 'archived' %}<div class="archived-note">This chat is archived. Reopen it before posting; existing sessions stay revoked, so both parties will need fresh magic links.</div>{% endif %}
+
 {% for m in messages %}
-<div class="msg">
+<div class="msg party-{{ m.party }}">
   <div class="who">{{ m.sender }} · {{ m.party }}</div>
   <div class="body">{{ m.body }}</div>
   {% for a in m.attachments %}<img src="/chat/attachment/{{ a.id }}?admin=1" alt="{{ a.filename }}">{% endfor %}
@@ -479,6 +531,18 @@ h1 { font-size:18px; margin:0 0 4px; }
 </div>
 {% endfor %}
 {% if not messages %}<div style="text-align:center;color:#6b7280;padding:24px">No messages yet.</div>{% endif %}
+
+{% if space.status == 'active' %}
+<form class="compose" method="POST" action="/admin/chats/{{ space.id }}/messages">
+  <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+  <textarea name="body" placeholder="Post a message as Influence (visible to both creator and brand)…" required></textarea>
+  <div class="row">
+    <span class="hint">Sender will appear as <b>Influence</b>. The creator will get an email and the brand workspace will be pinged.</span>
+    <button type="submit">Send</button>
+  </div>
+</form>
+{% endif %}
+
 </div></body></html>
 """
 

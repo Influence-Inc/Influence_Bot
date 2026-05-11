@@ -440,13 +440,14 @@ def admin_chats_list():
 
     q = (request.args.get("q") or "").strip() or None
     status = (request.args.get("status") or "").strip() or None
-    spaces = chat_service.list_spaces_for_admin(status=status, search=q)
+    brand = (request.args.get("brand") or "").strip() or None
+    spaces = chat_service.list_spaces_for_admin(status=status, search=q, brand=brand)
     stats = chat_service.admin_stats()
     html = render_template_string(
         ADMIN_DASHBOARD,
         spaces=spaces,
         stats=stats,
-        query={"q": q, "status": status},
+        query={"q": q, "status": status, "brand": brand},
     )
     return Response(html, mimetype="text/html")
 
@@ -494,7 +495,84 @@ def admin_chat_archive(space_id: int):
     if not _is_admin():
         return jsonify({"error": "forbidden"}), 403
     ok = archive_space(space_id)
+    # Form posts (from the admin UI) get a redirect; JSON callers get JSON.
+    if request.form.get("redirect"):
+        return make_response("", 302, {"Location": request.form.get("redirect")})
     return jsonify({"ok": ok})
+
+
+@bp.route("/admin/chats/<int:space_id>/reopen", methods=["POST"])
+def admin_chat_reopen(space_id: int):
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    ok = chat_service.reopen_space(space_id)
+    if request.form.get("redirect"):
+        return make_response("", 302, {"Location": request.form.get("redirect")})
+    return jsonify({"ok": ok})
+
+
+@bp.route("/admin/chats/<int:space_id>/messages", methods=["POST"])
+def admin_chat_post_message(space_id: int):
+    """Admin posts into a chat as party='admin'. Broadcasts via SSE so both
+    creator and brand see the message live."""
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    space = find_by_id(space_id)
+    if space is None or space.status != "active":
+        return jsonify({"error": "chat_closed"}), 410
+    body = (request.form.get("body") or "").strip()
+    if not body:
+        return jsonify({"error": "empty"}), 400
+    msg = chat_service.post_message(
+        chat_space_id=space_id,
+        sender_party="admin",
+        sender_identifier="influence-admin",
+        sender_display_name="Influence",
+        body=body,
+    )
+    if msg is None:
+        return jsonify({"error": "failed"}), 500
+    # Side-channel notifications: email creator + Slack-ping brand, same as
+    # if either of them had spoken.
+    try:
+        from services.chat_notifications import notify_new_message
+        notify_new_message(chat_space_id=space_id, sender_party="admin", message_id=msg.id)
+    except Exception as exc:
+        logger.warning("admin message notification failed: %s", exc)
+    if request.form.get("redirect"):
+        return make_response("", 302, {"Location": request.form.get("redirect")})
+    return jsonify({"ok": True, "id": msg.id})
+
+
+@bp.route("/admin/chats/<int:space_id>/export.json", methods=["GET"])
+def admin_chat_export_json(space_id: int):
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    snap = chat_service.export_transcript(space_id)
+    if snap is None:
+        return _error_response("Not found", "Chat space not found.", status=404)
+    filename = f"chat-{space_id}-transcript.json"
+    return Response(
+        json.dumps(snap, indent=2, ensure_ascii=False),
+        mimetype="application/json; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@bp.route("/admin/chats/<int:space_id>/export.md", methods=["GET"])
+def admin_chat_export_md(space_id: int):
+    if not _is_admin():
+        return jsonify({"error": "forbidden"}), 403
+    snap = chat_service.export_transcript(space_id)
+    if snap is None:
+        return _error_response("Not found", "Chat space not found.", status=404)
+    md = chat_service.transcript_to_markdown(snap)
+    filename = f"chat-{space_id}-transcript.md"
+    return Response(
+        md,
+        mimetype="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def register_chat_routes(flask_app) -> None:
