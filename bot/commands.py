@@ -2,9 +2,10 @@
 Slack slash command handlers for INFLUENCE Bot.
 
 Commands:
-  /influence-status  — View active campaign statuses from the ReelStats API
-  /influence-check   — Manually trigger all notification checks
-  /influence-help    — Show all available commands
+  /influence-status   — View active campaign statuses from the ReelStats API
+  /influence-check    — Manually trigger all notification checks
+  /influence-install  — Generate a per-brand Slack install link (admin only)
+  /influence-help     — Show all available commands
 
 Workspace scoping
 -----------------
@@ -16,6 +17,7 @@ trigger global checks.
 
 import logging
 import re
+from urllib.parse import urlparse
 
 from models.models import (
     DeadlineReminder,
@@ -25,6 +27,7 @@ from models.models import (
     UploadFollowup,
 )
 from services.brand_routing import find_install_by_team
+from services.slack_oauth import InstallConfigError, SlackInstallURLGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,16 @@ def _normalize(value):
     if not value:
         return ""
     return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _public_base_url(redirect_uri):
+    """Strip the path off SLACK_OAUTH_REDIRECT_URI to get the bot's public origin."""
+    if not redirect_uri:
+        return None
+    parsed = urlparse(redirect_uri)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def register_commands(app, scheduler_service, reelstats_api):
@@ -164,6 +177,95 @@ def register_commands(app, scheduler_service, reelstats_api):
             response_type="ephemeral",
         )
 
+    _BRAND_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+    @app.command("/influence-install")
+    def handle_install(ack, respond, command):
+        """
+        Generate a Slack install link for a brand. Admin-only: brand
+        workspaces shouldn't be able to mint install URLs for other brands.
+
+        Usage: /influence-install <brand-slug>
+        The slug is embedded (signed) in the OAuth `state` so the callback
+        attributes the install to the right brand.
+        """
+        ack()
+
+        install = find_install_by_team(command.get("team_id"))
+        if install is not None:
+            respond(
+                text=(
+                    ":lock: This command is reserved for the INFLUENCE admin "
+                    "workspace."
+                ),
+                response_type="ephemeral",
+            )
+            return
+
+        tokens = (command.get("text") or "").strip().split()
+        brand = tokens[0].lower() if tokens else ""
+        if not brand:
+            respond(
+                text=(
+                    ":information_source: *Usage:* `/influence-install <brand-slug>`\n"
+                    "Example: `/influence-install acme` — the slug is embedded in "
+                    "the install link so we can attribute the workspace to the brand."
+                ),
+                response_type="ephemeral",
+            )
+            return
+
+        if not _BRAND_SLUG_RE.match(brand):
+            respond(
+                text=(
+                    f":warning: `{brand}` isn't a valid brand slug. Use lowercase "
+                    "letters, digits, and hyphens (max 63 chars), starting with a "
+                    "letter or digit."
+                ),
+                response_type="ephemeral",
+            )
+            return
+
+        # Prefer the bot-routed `/slack/install/<brand>` URL (derived from
+        # SLACK_OAUTH_REDIRECT_URI) so the link mints a fresh signed state at
+        # each click and never expires. Fall back to the direct Slack URL
+        # (10-minute state lifetime) if the redirect URI isn't configured.
+        try:
+            generator = SlackInstallURLGenerator()
+        except InstallConfigError as exc:
+            logger.error("Slack OAuth not configured: %s", exc)
+            respond(
+                text=(
+                    f":x: Slack OAuth isn't configured on the bot: {exc}. "
+                    "Set `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, "
+                    "`SLACK_OAUTH_REDIRECT_URI`, and `SLACK_OAUTH_STATE_SECRET`."
+                ),
+                response_type="ephemeral",
+            )
+            return
+
+        public_base = _public_base_url(generator.redirect_uri)
+        if public_base:
+            url = f"{public_base}/slack/install/{brand}"
+            expiry_note = ""
+        else:
+            url = generator.build_install_url(brand=brand)
+            expiry_note = (
+                "\n:hourglass: This link expires in 10 minutes — re-run the "
+                "command for a fresh one if needed."
+            )
+
+        respond(
+            text=(
+                f":link: *Install link for `{brand}`*\n"
+                f"<{url}|Open Slack consent screen> "
+                "(or copy the URL below to send to the brand)\n"
+                f"```{url}```"
+                f"{expiry_note}"
+            ),
+            response_type="ephemeral",
+        )
+
     @app.command("/influence-help")
     def handle_help(ack, respond):
         """Show all available bot commands."""
@@ -173,6 +275,7 @@ def register_commands(app, scheduler_service, reelstats_api):
                 ":robot_face: *INFLUENCE Bot Commands*\n\n"
                 "`/influence-status` — View active campaigns from the ReelStats API\n"
                 "`/influence-check` — Manually run all notification checks (admin only)\n"
+                "`/influence-install <brand>` — Generate a Slack install link for a brand (admin only)\n"
                 "`/influence-help` — Show this help message\n\n"
                 "*Automatic Features:*\n"
                 "- :trophy: View milestone alerts (250K, 500K, 1M, ...)\n"
