@@ -298,17 +298,22 @@ def post_message(
     sender_display_name: Optional[str],
     body: str,
     publish: bool = True,
+    allow_empty: bool = False,
 ) -> Optional[ChatMessage]:
     """
     Persist a new message. Set `publish=False` if the caller is about to
     attach a file and wants to broadcast the complete message (body +
     attachments) via `publish_message(msg.id)` once the attachment row is
     written; that way SSE subscribers see one event with everything.
+
+    `allow_empty=True` lets the caller post an image-only message (no
+    text body). Without this guard, image uploads with no caption would
+    be rejected with `None`.
     """
     body = (body or "").strip()
     if len(body) > _MAX_BODY:
         body = body[:_MAX_BODY]
-    if not body:
+    if not body and not allow_empty:
         return None
 
     db = SessionLocal()
@@ -431,9 +436,15 @@ def list_messages(
 
 ALLOWED_ATTACHMENT_MIMES = {
     "image/jpeg",
+    # Some mobile browsers report the (non-standard but widespread) "image/jpg".
+    "image/jpg",
     "image/png",
     "image/gif",
     "image/webp",
+    # iOS shares photos as HEIC/HEIF when the user hasn't enabled "Most
+    # Compatible" in Camera settings.
+    "image/heic",
+    "image/heif",
 }
 
 

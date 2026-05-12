@@ -89,6 +89,15 @@ def _is_admin() -> bool:
         return False
 
 
+def _format_chat_space_title(space) -> str:
+    """Single canonical chat-space title: '<Campaign> X <Creator>'."""
+    left = (space.campaign_name or space.brand_name or "Chat").strip()
+    right = (space.creator_username or "").strip()
+    if not right:
+        return left
+    return f"{left} X {right}"
+
+
 def _error_response(heading: str, message: str, status: int = 400) -> Response:
     html = render_template_string(ERROR_PAGE, heading=heading, message=message)
     return Response(html, status=status, mimetype="text/html")
@@ -182,8 +191,9 @@ def chat_page(space_id: int):
     if space is None:
         return _error_response("Chat not found", "This chat space no longer exists.", status=404)
 
-    chat_title = f"Chat with {space.brand_name or 'the brand'}" if sess.party == "creator" \
-        else f"Chat with @{space.creator_username}"
+    # Same title for everyone: "<Campaign> X <Creator>", e.g. "Influuu X Virat".
+    # Falls back to brand_name if campaign_name is missing.
+    chat_title = _format_chat_space_title(space)
 
     initial_read = chat_service.read_state_for_space(space.id)
     html = render_template_string(
@@ -255,22 +265,31 @@ def chat_messages_post(space_id: int):
         sender_party=sess.party,
         sender_identifier=sess.identifier,
         sender_display_name=sess.display_name,
-        body=body or " ",
+        body=body,
         publish=not has_file,
+        allow_empty=has_file,
     )
     if msg is None:
         return jsonify({"error": "failed"}), 500
 
     if has_file:
         data = file.read()
-        chat_service.store_attachment(
+        stored = chat_service.store_attachment(
             message_id=msg.id,
             filename=file.filename,
             content_type=(file.mimetype or "application/octet-stream").lower(),
             data=data,
         )
-        # Now that the attachment row exists, publish the full message so
-        # SSE subscribers receive a single event with body + attachments.
+        if stored is None:
+            logger.warning(
+                "Attachment rejected for message %s (mime=%s, size=%d). "
+                "Allowed mimes: %s",
+                msg.id, file.mimetype, len(data),
+                sorted(chat_service.ALLOWED_ATTACHMENT_MIMES),
+            )
+        # Now that the attachment row exists (or was rejected), publish the
+        # full message so SSE subscribers receive a single event with the
+        # final state.
         chat_service.publish_message(msg.id)
 
     # Notify the other side out-of-band (Slack/email), best-effort.
@@ -486,7 +505,12 @@ def admin_chat_view(space_id: int):
     if space is None:
         return _error_response("Not found", "Chat space not found.", status=404)
     messages = chat_service.list_messages(chat_space_id=space_id, limit=2000)
-    html = render_template_string(ADMIN_CHAT_PAGE, space=space, messages=messages)
+    html = render_template_string(
+        ADMIN_CHAT_PAGE,
+        space=space,
+        messages=messages,
+        title=_format_chat_space_title(space),
+    )
     return Response(html, mimetype="text/html")
 
 
