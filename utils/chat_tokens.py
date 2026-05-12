@@ -55,11 +55,16 @@ def make_invite_token(
 
 
 def read_invite_token(token: str) -> Optional[dict]:
-    """Verify + decode. Returns the payload dict or None on any failure."""
+    """
+    Verify + decode. Tries the long-lived brand TTL first (since brand
+    tokens are baked into Slack messages that may sit around for weeks),
+    then falls back to the shorter creator TTL.
+    """
+    ser = _serializer(_INVITE_SALT)
     try:
-        return _serializer(_INVITE_SALT).loads(token, max_age=Config.CHAT_MAGIC_LINK_TTL)
+        return ser.loads(token, max_age=Config.CHAT_BRAND_LINK_TTL)
     except SignatureExpired:
-        logger.info("Chat invite token expired")
+        logger.info("Chat invite token expired (>%ds)", Config.CHAT_BRAND_LINK_TTL)
     except BadSignature:
         logger.info("Chat invite token signature invalid")
     except Exception as exc:

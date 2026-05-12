@@ -116,6 +116,19 @@ class Config:
     # Magic-link / session lifetimes (seconds).
     CHAT_MAGIC_LINK_TTL = int(os.environ.get("CHAT_MAGIC_LINK_TTL", str(7 * 24 * 3600)))
     CHAT_SESSION_TTL = int(os.environ.get("CHAT_SESSION_TTL", str(14 * 24 * 3600)))
+    # Brand magic links are baked into Slack review messages at post time, so
+    # they need to outlive the typical 7-day creator link. Default 90 days.
+    CHAT_BRAND_LINK_TTL = int(os.environ.get("CHAT_BRAND_LINK_TTL", str(90 * 24 * 3600)))
+
+    # Address that chat-related notification emails are sent FROM. Must be an
+    # authorized send-as alias on the SMTP account (Gmail: Settings -> Accounts
+    # -> "Send mail as"), otherwise SMTP will reject the send.
+    CHAT_NOTIFICATION_FROM_EMAIL = os.environ.get(
+        "CHAT_NOTIFICATION_FROM_EMAIL", "contact@influence.technology"
+    )
+    CHAT_NOTIFICATION_FROM_NAME = os.environ.get(
+        "CHAT_NOTIFICATION_FROM_NAME", "INFLUENCE"
+    )
 
     # --- Testing ---
     # If set, the bot only processes the campaign with this exact name.

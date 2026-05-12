@@ -280,6 +280,7 @@ def build_review_submitted_blocks(
     notes: str,
     review_id: int | None = None,
     show_meta: bool = False,
+    chat_url: str | None = None,
 ) -> list[dict]:
     """
     Webhook event: creator submitted a video for review.
@@ -288,6 +289,11 @@ def build_review_submitted_blocks(
     side where one channel sees content from many brands. Brand
     workspaces leave it off since the workspace itself identifies
     the brand.
+
+    `chat_url`, when provided, is baked into the Request Changes button
+    as a URL — clicking the button opens the brand's chat space in a
+    browser AND fires the action handler on our backend simultaneously
+    (Slack delivers both when a button has both `url` and `action_id`).
     """
     body_lines = [":video_camera: *Content to be reviewed*", ""]
     if show_meta:
@@ -316,6 +322,14 @@ def build_review_submitted_blocks(
     ]
 
     if review_id is not None:
+        request_changes_btn = {
+            "type": "button",
+            "action_id": "review_request_changes",
+            "text": {"type": "plain_text", "text": "Request Changes"},
+            "value": str(review_id),
+        }
+        if chat_url:
+            request_changes_btn["url"] = chat_url
         blocks.append(
             {
                 "type": "actions",
@@ -328,12 +342,7 @@ def build_review_submitted_blocks(
                         "text": {"type": "plain_text", "text": "Approve"},
                         "value": str(review_id),
                     },
-                    {
-                        "type": "button",
-                        "action_id": "review_request_changes",
-                        "text": {"type": "plain_text", "text": "Request Changes"},
-                        "value": str(review_id),
-                    },
+                    request_changes_btn,
                 ],
             }
         )

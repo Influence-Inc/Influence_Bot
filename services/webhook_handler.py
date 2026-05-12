@@ -73,6 +73,29 @@ class WebhookHandler:
             )
             return False, None, None
 
+    def _build_brand_chat_url(self, review_id: int) -> str | None:
+        """
+        Pre-create (or reuse) the chat space for this review and return the
+        brand's magic-link URL. Returns None — and the caller renders the
+        Request Changes button without a `url` field — if PUBLIC_BASE_URL
+        isn't configured or chat creation fails. The button still works as
+        a plain action button in that case.
+        """
+        if not Config.PUBLIC_BASE_URL:
+            return None
+        try:
+            from services import chat_service
+            from utils.chat_tokens import make_invite_token
+
+            space = chat_service.get_or_create_for_review(review_id)
+            if space is None:
+                return None
+            token = make_invite_token(chat_space_id=space.id, party="brand")
+            return f"{Config.PUBLIC_BASE_URL.rstrip('/')}/chat/invite/{token}"
+        except Exception as exc:
+            logger.warning("Could not pre-build brand chat URL: %s", exc)
+            return None
+
     def handle_event(self, payload: dict) -> bool:
         """Route an incoming webhook event to the appropriate handler."""
         event_type = payload.get("event")
@@ -171,6 +194,13 @@ class WebhookHandler:
             finally:
                 db.close()
 
+            # Pre-create (or reuse) the chat space NOW so the brand's magic
+            # link can be baked into the Request Changes button. The button
+            # uses both `url` and `action_id`: clicking it opens the chat in
+            # the brand's browser AND fires our backend handler, which
+            # records the decision + emails the creator.
+            brand_chat_url = self._build_brand_chat_url(review_id)
+
             admin_blocks = build_review_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
@@ -179,6 +209,7 @@ class WebhookHandler:
                 notes=notes,
                 review_id=review_id,
                 show_meta=True,
+                chat_url=brand_chat_url,
             )
             text = f"New review submitted by @{username} for {campaign_name}"
 
@@ -200,10 +231,9 @@ class WebhookHandler:
                 finally:
                     db.close()
 
-            # Mirror to the brand's own workspace, including the Approve /
-            # Request Changes buttons so the brand can drive the decision.
-            # The first click (admin or brand) wins via the DB-level
-            # "already decided" guard in bot/actions.py.
+            # Mirror to the brand's own workspace with the same Request
+            # Changes button (URL-baked). The first click (admin or brand)
+            # wins via the DB-level "already decided" guard in bot/actions.py.
             brand_blocks = build_review_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
@@ -212,6 +242,7 @@ class WebhookHandler:
                 notes=notes,
                 review_id=review_id,
                 show_meta=False,
+                chat_url=brand_chat_url,
             )
             post_to_brand_workspace(brand_name, text, brand_blocks)
 
