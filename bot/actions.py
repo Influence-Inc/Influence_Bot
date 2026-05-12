@@ -3,7 +3,6 @@ Slack interactive action handlers for INFLUENCE Bot.
 Handles button clicks on notification messages.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -16,11 +15,8 @@ from models.models import (
 )
 from services.email_service import EmailService
 from services import chat_service
-from services.chat_notifications import notify_chat_space_created
-from templates.email_templates import (
-    video_approved,
-    video_changes_requested,
-)
+from services.chat_notifications import notify_creator_changes_requested
+from templates.email_templates import video_approved
 
 logger = logging.getLogger(__name__)
 
@@ -178,16 +174,18 @@ def register_actions(app):
                 )
                 return
 
-            if row.decision:
+            if row.decision == "approved":
                 respond(
                     text=(
-                        f":information_source: This review already has a decision "
-                        f"recorded: *{row.decision}*."
+                        ":information_source: This review is already approved."
                     ),
                     response_type="ephemeral",
                 )
                 return
-
+            # Approve overrides a prior "changes_requested" decision — both
+            # buttons stay visible until Approve is clicked, so the brand
+            # can move on from a chat-driven revision cycle to approval
+            # without re-clicking anything.
             row.decision = "approved"
             row.decided_by_id = actor_id
             row.decided_by_name = actor_name
@@ -250,147 +248,58 @@ def register_actions(app):
         )
 
     # ------------------------------------------------------------------
-    # Review: Request Changes (open modal)
+    # Review: Request Changes
+    #
+    # The Slack button is hybrid (url + action_id): clicking it opens the
+    # brand's chat space in the browser AND fires this handler. We use the
+    # action callback to (a) record the decision, (b) email the creator,
+    # (c) append a footer to the original Slack message. The buttons
+    # themselves stay until Approve is clicked, so the brand can request
+    # changes multiple times — each click re-emails the creator and
+    # updates the footer.
     # ------------------------------------------------------------------
     @app.action("review_request_changes")
     def handle_review_request_changes(ack, body, client):
-        ack()
-
-        action = (body.get("actions") or [{}])[0]
-        review_id = action.get("value", "")
-
-        channel_id = (body.get("channel") or {}).get("id")
-        message = body.get("message") or {}
-        ts = message.get("ts")
-        trigger_id = body.get("trigger_id")
-
-        # Pre-fetch a bit of context for the modal title.
-        db = SessionLocal()
-        try:
-            try:
-                row = db.query(ReviewSubmission).get(int(review_id))
-            except (TypeError, ValueError):
-                row = None
-            if row is None:
-                logger.warning(
-                    f"review_request_changes for unknown review_id={review_id}"
-                )
-                return
-            if row.decision:
-                client.chat_postEphemeral(
-                    channel=channel_id,
-                    user=body.get("user", {}).get("id"),
-                    text=(
-                        f":information_source: This review already has a decision "
-                        f"recorded: *{row.decision}*."
-                    ),
-                )
-                return
-            creator_username = row.creator_username
-        finally:
-            db.close()
-
-        private_metadata = json.dumps(
-            {
-                "review_id": int(review_id),
-                "channel_id": channel_id,
-                "ts": ts,
-            }
-        )
-
-        try:
-            client.views_open(
-                trigger_id=trigger_id,
-                view={
-                    "type": "modal",
-                    "callback_id": "review_changes_modal",
-                    "private_metadata": private_metadata,
-                    "title": {"type": "plain_text", "text": "Request Changes"},
-                    "submit": {"type": "plain_text", "text": "Send to Creator"},
-                    "close": {"type": "plain_text", "text": "Cancel"},
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": (
-                                    f"Feedback for *@{creator_username}*. "
-                                    f"This will email the creator and update the Slack message."
-                                ),
-                            },
-                        },
-                        {
-                            "type": "input",
-                            "block_id": "feedback_block",
-                            "label": {
-                                "type": "plain_text",
-                                "text": "What needs to change?",
-                            },
-                            "element": {
-                                "type": "plain_text_input",
-                                "action_id": "feedback_input",
-                                "multiline": True,
-                                "min_length": 3,
-                                "placeholder": {
-                                    "type": "plain_text",
-                                    "text": "Describe the requested changes…",
-                                },
-                            },
-                        },
-                    ],
-                },
-            )
-        except Exception as e:
-            logger.error(f"Failed to open request-changes modal: {e}")
-
-    # ------------------------------------------------------------------
-    # Review: Request Changes (modal submission)
-    # ------------------------------------------------------------------
-    @app.view("review_changes_modal")
-    def handle_review_changes_submit(ack, body, client, view):
         ack()
 
         user = body.get("user", {})
         actor_id = user.get("id", "")
         actor_name = user.get("username") or user.get("name") or actor_id
 
+        action = (body.get("actions") or [{}])[0]
         try:
-            meta = json.loads(view.get("private_metadata") or "{}")
-        except json.JSONDecodeError:
-            meta = {}
-        review_id = meta.get("review_id")
-        channel_id = meta.get("channel_id")
-        ts = meta.get("ts")
-
-        state_values = (view.get("state") or {}).get("values", {})
-        feedback = (
-            state_values.get("feedback_block", {})
-            .get("feedback_input", {})
-            .get("value")
-            or ""
-        ).strip()
-
-        if not review_id or not feedback:
-            logger.warning("review_changes_modal submitted without review_id or feedback")
+            review_id = int(action.get("value", ""))
+        except (TypeError, ValueError):
+            logger.warning("review_request_changes clicked with non-integer value")
             return
+
+        channel_id = (body.get("channel") or {}).get("id")
+        message = body.get("message") or {}
+        ts = message.get("ts")
+        original_blocks = message.get("blocks") or []
 
         db = SessionLocal()
         try:
             row = db.query(ReviewSubmission).get(review_id)
             if row is None:
                 logger.warning(
-                    f"review_changes_modal submission for unknown review_id={review_id}"
+                    f"review_request_changes for unknown review_id={review_id}"
                 )
                 return
-            if row.decision:
+            if row.decision == "approved":
+                # Already approved — buttons should already be stripped,
+                # but in case a stale message is clicked, no-op.
                 logger.info(
-                    f"review_changes_modal: review {review_id} already decided "
-                    f"as {row.decision}, ignoring"
+                    f"review_request_changes ignored: review {review_id} "
+                    f"already approved"
                 )
                 return
 
-            row.decision = "changes_requested"
-            row.decision_feedback = feedback
+            # First-time-or-not bookkeeping: set decision on first click,
+            # always bump decided_at/by to reflect the latest click.
+            first_time = row.decision is None
+            if first_time:
+                row.decision = "changes_requested"
             row.decided_by_id = actor_id
             row.decided_by_name = actor_name
             row.decided_at = datetime.now(timezone.utc)
@@ -399,23 +308,13 @@ def register_actions(app):
             creator_email = row.creator_email
             creator_username = row.creator_username
             brand_name = row.brand_name or ""
+            campaign_name = row.campaign_name or ""
         finally:
             db.close()
 
-        email_sent = False
-        if creator_email:
-            template = video_changes_requested(
-                creator_name=creator_username,
-                brand_name=brand_name,
-                feedback=feedback,
-            )
-            email_sent = _email_service.send_approval_notification(
-                creator_email, template
-            )
-
-        # Open (or reuse) the persistent chat space for this creator + campaign
-        # and notify both sides. Failures here must not block the rest of the
-        # Request-Changes flow.
+        # Ensure a chat space exists (idempotent — pre-created at review
+        # post time, but this is the safety net if PUBLIC_BASE_URL was
+        # missing then).
         chat_space_id = None
         try:
             team = body.get("team") or {}
@@ -424,40 +323,33 @@ def register_actions(app):
             )
             if space is not None:
                 chat_space_id = space.id
-                notify_chat_space_created(space.id)
         except Exception as exc:
-            logger.exception("Failed to open chat space for review %s: %s", review_id, exc)
-
-        # Update the original Slack message.
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        email_note = (
-            "creator emailed" if email_sent
-            else ("no creator email on file" if not creator_email
-                  else "email failed — check logs")
-        )
-
-        if channel_id and ts:
-            try:
-                original = client.conversations_history(
-                    channel=channel_id, latest=ts, inclusive=True, limit=1
-                )
-                messages = original.get("messages") or []
-                original_blocks = messages[0].get("blocks") if messages else []
-            except Exception as e:
-                logger.warning(f"Could not fetch original review message: {e}")
-                original_blocks = []
-
-            updated_blocks = _strip_review_action_buttons(
-                original_blocks or [], review_id
+            logger.exception(
+                "Failed to ensure chat space for review %s: %s", review_id, exc
             )
-            updated_blocks.append(
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f":memo: *Feedback sent to creator:*\n>{feedback}",
-                    },
-                }
+
+        # Email the creator (fresh email every click). Pulled into the
+        # chat-notifications module so the From address override + chat
+        # URL building stay in one place.
+        email_sent = False
+        if chat_space_id and creator_email:
+            try:
+                email_sent = notify_creator_changes_requested(
+                    chat_space_id=chat_space_id,
+                    actor_name=actor_name,
+                )
+            except Exception as exc:
+                logger.warning("notify_creator_changes_requested failed: %s", exc)
+
+        # Append a footer to the original Slack message; do NOT strip the
+        # action buttons — they stay until Approve.
+        if channel_id and ts:
+            updated_blocks = list(original_blocks)
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            email_note = (
+                "creator emailed" if email_sent
+                else ("no creator email on file" if not creator_email
+                      else "email failed — check logs")
             )
             updated_blocks.append(
                 {
@@ -466,14 +358,13 @@ def register_actions(app):
                         {
                             "type": "mrkdwn",
                             "text": (
-                                f":pencil2: *Changes requested* by <@{actor_id}> — "
+                                f":pencil2: *Chat opened* by <@{actor_id}> — "
                                 f"@{creator_username} ({timestamp}) · {email_note}"
                             ),
                         }
                     ],
                 }
             )
-
             try:
                 client.chat_update(
                     channel=channel_id,
@@ -483,11 +374,11 @@ def register_actions(app):
                 )
             except Exception as e:
                 logger.error(
-                    f"Failed to update message after review_changes_modal: {e}"
+                    f"Failed to update message after review_request_changes: {e}"
                 )
 
         logger.info(
-            f"review_changes_requested: review_id={review_id} "
+            f"review_request_changes: review_id={review_id} "
             f"creator=@{creator_username} actor=@{actor_name} "
-            f"email_sent={email_sent}"
+            f"first_time={first_time} email_sent={email_sent}"
         )

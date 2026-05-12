@@ -79,68 +79,41 @@ def _load_space(chat_space_id: int) -> Optional[ChatSpace]:
         db.close()
 
 
-def notify_chat_space_created(chat_space_id: int) -> None:
+def notify_creator_changes_requested(*, chat_space_id: int, actor_name: str = "") -> bool:
     """
-    Right after a chat space is created from a Request-Changes click:
-      - Email the creator their magic link (separate from the existing
-        "changes requested" email).
-      - Post a Slack invite into the brand workspace channel.
+    Fired on every Request-Changes click. Emails the creator a fresh
+    chat-invite (from contact@influence.technology by default) with their
+    magic link. Returns True if the email was sent successfully.
+
+    There is intentionally NO Slack notification fan-out here: the brand
+    is being redirected directly into the chat by the URL on the Slack
+    button itself, so there's nothing to announce in their channel.
     """
     space = _load_space(chat_space_id)
-    if space is None:
-        return
+    if space is None or not space.creator_email:
+        return False
 
     creator_url = _chat_url(space.id, party="creator", identifier=space.creator_email)
-    brand_url = _chat_url(space.id, party="brand")
+    if not creator_url:
+        return False
 
-    if creator_url and space.creator_email:
-        try:
-            tmpl = chat_invite(
-                creator_name=space.creator_username,
-                brand_name=space.brand_name or "the brand",
-                campaign_name=space.campaign_name or "your campaign",
-                chat_url=creator_url,
-            )
-            _email_service.send_email(
-                space.creator_email, tmpl["subject"], tmpl["body"]
-            )
-        except Exception as exc:
-            logger.warning("chat_invite email failed: %s", exc)
-
-    install = _brand_install(space)
-    if install and install.bot_token and install.channel_id and brand_url:
-        blocks = build_chat_space_invite_blocks(
-            creator_username=space.creator_username,
-            campaign_name=space.campaign_name or "—",
-            brand_name=space.brand_name or "",
-            chat_url=brand_url,
+    try:
+        tmpl = chat_invite(
+            creator_name=space.creator_username,
+            brand_name=space.brand_name or "the brand",
+            campaign_name=space.campaign_name or "your campaign",
+            chat_url=creator_url,
         )
-        text = (
-            f"Chat space opened with @{space.creator_username} "
-            f"for {space.campaign_name or 'campaign'}"
+        return _email_service.send_email(
+            space.creator_email,
+            tmpl["subject"],
+            tmpl["body"],
+            from_email=Config.CHAT_NOTIFICATION_FROM_EMAIL,
+            from_name=Config.CHAT_NOTIFICATION_FROM_NAME,
         )
-        try:
-            response = WebClient(token=install.bot_token).chat_postMessage(
-                channel=install.channel_id, text=text, blocks=blocks,
-            )
-            ts = response.get("ts")
-            channel = response.get("channel")
-            # Persist the brand notification coordinates on the chat space.
-            if ts:
-                db = SessionLocal()
-                try:
-                    row = db.query(ChatSpace).get(space.id)
-                    if row is not None:
-                        row.brand_slack_channel = channel
-                        row.brand_slack_ts = ts
-                        db.commit()
-                finally:
-                    db.close()
-        except SlackApiError as exc:
-            err = exc.response.get("error") if exc.response else str(exc)
-            logger.warning("brand chat-invite Slack post failed: %s", err)
-        except Exception as exc:
-            logger.warning("brand chat-invite Slack post failed: %s", exc)
+    except Exception as exc:
+        logger.warning("notify_creator_changes_requested email failed: %s", exc)
+        return False
 
 
 def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int) -> None:
@@ -178,7 +151,11 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
                     chat_url=creator_url,
                 )
                 _email_service.send_email(
-                    space.creator_email, tmpl["subject"], tmpl["body"]
+                    space.creator_email,
+                    tmpl["subject"],
+                    tmpl["body"],
+                    from_email=Config.CHAT_NOTIFICATION_FROM_EMAIL,
+                    from_name=Config.CHAT_NOTIFICATION_FROM_NAME,
                 )
             except Exception as exc:
                 logger.warning("chat new-message email failed: %s", exc)

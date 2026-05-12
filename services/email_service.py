@@ -49,8 +49,25 @@ class EmailService:
         self.password = Config.SMTP_PASSWORD
         self.from_name = Config.EMAIL_FROM_NAME
 
-    def send_email(self, to_email: str, subject: str, body: str, cc: str = None) -> bool:
-        """Send an email via SMTP."""
+    def send_email(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        cc: str = None,
+        from_email: str = None,
+        from_name: str = None,
+    ) -> bool:
+        """
+        Send an email via SMTP.
+
+        `from_email` / `from_name` override the From header for this send
+        only — useful for the chat-notification flow that mails creators
+        as contact@influence.technology even though the SMTP account is
+        authenticated as jennifer@useinfluence.xyz. The override address
+        must be configured as a verified send-as alias on the SMTP account
+        or the provider will reject the send.
+        """
         if not self.password:
             logger.error(
                 "SMTP_PASSWORD is not set; cannot send email to %s. "
@@ -59,9 +76,12 @@ class EmailService:
             )
             return False
 
+        effective_from_email = from_email or self.username
+        effective_from_name = from_name or self.from_name
+
         try:
             msg = MIMEMultipart()
-            msg["From"] = f"{self.from_name} <{self.username}>"
+            msg["From"] = f"{effective_from_name} <{effective_from_email}>"
             msg["To"] = to_email
             msg["Subject"] = subject
             if cc:
@@ -76,13 +96,21 @@ class EmailService:
             with _IPv4SMTP(self.host, self.port, timeout=20) as server:
                 server.starttls()
                 server.login(self.username, self.password)
-                server.sendmail(self.username, recipients, msg.as_string())
+                # Envelope sender uses the override address too. Gmail will
+                # 550 here if the override isn't a verified send-as alias.
+                server.sendmail(effective_from_email, recipients, msg.as_string())
 
-            logger.info(f"Email sent to {to_email}: {subject}")
+            logger.info(
+                "Email sent to %s as %s: %s",
+                to_email, effective_from_email, subject,
+            )
             return True
 
         except Exception as e:
-            logger.error(f"Failed to send email to {to_email}: {e}")
+            logger.error(
+                "Failed to send email to %s as %s: %s",
+                to_email, effective_from_email, e,
+            )
             return False
 
     def send_followup(self, to_email: str, template_data: dict) -> bool:
