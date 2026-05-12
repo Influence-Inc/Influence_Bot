@@ -150,10 +150,12 @@ CHAT_PAGE = """\
       reactHtml += '</div>';
     }
     const ts = m.created_at ? new Date(m.created_at).toLocaleString() : '';
+    const bodyText = (m.body || '').trim();
+    const bodyHtml = bodyText ? '<div class="body">' + escapeHtml(bodyText) + '</div>' : '';
     div.innerHTML =
       '<div class="bubble">' +
       '<div class="who">' + escapeHtml(m.sender || m.party) + '</div>' +
-      '<div class="body">' + escapeHtml(m.body) + '</div>' +
+      bodyHtml +
       attHtml + reactHtml +
       '<div class="ts">' + escapeHtml(ts) + receiptHtml(m) + '</div>' +
       '</div>';
@@ -500,8 +502,8 @@ h1 { font-size:18px; margin:0 0 4px; }
 </style></head><body>
 <div class="container">
 <div class="crumbs"><a href="/admin/chats">← All chat spaces</a></div>
-<h1>{{ space.campaign_name or '—' }} · {{ space.brand_name or '—' }}</h1>
-<div class="meta">Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} · status: {{ space.status }} · created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
+<h1>{{ title }}</h1>
+<div class="meta">Campaign {{ space.campaign_name or '—' }} · Brand {{ space.brand_name or '—' }} · Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} · status: {{ space.status }} · created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
 
 <div class="toolbar">
   <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
@@ -524,7 +526,7 @@ h1 { font-size:18px; margin:0 0 4px; }
 {% for m in messages %}
 <div class="msg party-{{ m.party }}">
   <div class="who">{{ m.sender }} · {{ m.party }}</div>
-  <div class="body">{{ m.body }}</div>
+  {% if m.body and m.body.strip() %}<div class="body">{{ m.body }}</div>{% endif %}
   {% for a in m.attachments %}<img src="/chat/attachment/{{ a.id }}?admin=1" alt="{{ a.filename }}">{% endfor %}
   {% if m.reactions %}<div class="reactions">{% for emoji, count in m.reactions.items() %}{{ emoji }} {{ count }} &nbsp;{% endfor %}</div>{% endif %}
   <div class="ts">{{ m.created_at }}</div>
