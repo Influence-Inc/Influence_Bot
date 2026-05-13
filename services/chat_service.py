@@ -128,6 +128,7 @@ def get_or_create_for_review(
 
         space = ChatSpace(
             reuse_key=reuse_key,
+            public_slug=_generate_public_slug(db),
             creator_username=review.creator_username,
             creator_email=review.creator_email,
             campaign_slug=review.campaign_slug,
@@ -196,6 +197,35 @@ def find_by_id(chat_space_id: int) -> Optional[ChatSpace]:
         return row
     finally:
         db.close()
+
+
+def find_by_slug(public_slug: str) -> Optional[ChatSpace]:
+    if not public_slug:
+        return None
+    db = SessionLocal()
+    try:
+        row = db.query(ChatSpace).filter_by(public_slug=public_slug).first()
+        if row is None:
+            return None
+        db.expunge(row)
+        return row
+    finally:
+        db.close()
+
+
+def _generate_public_slug(db, *, max_attempts: int = 8) -> str:
+    """
+    URL-safe random slug (12 chars from secrets.token_urlsafe). 72 bits of
+    entropy is plenty — but we still loop on the unique constraint just
+    in case of collisions.
+    """
+    for _ in range(max_attempts):
+        candidate = secrets.token_urlsafe(9)
+        clash = db.query(ChatSpace).filter_by(public_slug=candidate).first()
+        if clash is None:
+            return candidate
+    # Astronomically unlikely; fall back to a longer slug.
+    return secrets.token_urlsafe(18)
 
 
 # ---------------------------------------------------------------------------

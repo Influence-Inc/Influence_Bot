@@ -38,6 +38,50 @@ SessionLocal = sessionmaker(bind=engine)
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_milestone_alerts_video_id()
+    _migrate_chat_spaces_public_slug()
+
+
+def _migrate_chat_spaces_public_slug():
+    """
+    Add `public_slug` to `chat_spaces` on pre-slug deploys and backfill
+    every row with a random URL-safe value. Idempotent.
+    """
+    import secrets
+
+    inspector = inspect(engine)
+    if "chat_spaces" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("chat_spaces")}
+    if "public_slug" not in cols:
+        # create_all() skipped this column because the table already exists;
+        # add it manually. SQLite + Postgres both accept this DDL.
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE chat_spaces ADD COLUMN public_slug VARCHAR(32)"))
+            try:
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_chat_spaces_public_slug "
+                    "ON chat_spaces (public_slug)"
+                ))
+            except Exception as exc:
+                logger.warning("Could not create unique index on public_slug: %s", exc)
+
+    # Backfill any rows still missing a slug.
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id FROM chat_spaces WHERE public_slug IS NULL")
+        ).fetchall()
+        for row in rows:
+            for _ in range(8):
+                slug = secrets.token_urlsafe(9)
+                try:
+                    conn.execute(
+                        text("UPDATE chat_spaces SET public_slug = :s WHERE id = :i"),
+                        {"s": slug, "i": row[0]},
+                    )
+                    break
+                except Exception:
+                    # Collision on the unique index — retry with a fresh slug.
+                    continue
 
 
 def _migrate_milestone_alerts_video_id():
@@ -315,6 +359,11 @@ class ChatSpace(Base):
     __tablename__ = "chat_spaces"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Unguessable URL slug — used in user-facing chat URLs like
+    # /chat/<public_slug> so addresses aren't sequential. The integer id
+    # is still used internally and on admin routes.
+    public_slug = Column(String(32), nullable=True, unique=True, index=True)
 
     # Composite key for reuse: see services.chat_service.compute_reuse_key.
     # SHA-256 hex of "{creator_key}|{campaign_key}|{brand_key}".

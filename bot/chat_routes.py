@@ -117,6 +117,22 @@ def _require_session_for_space(space_id: int):
     return sess, None
 
 
+def _resolve_slug(slug: str):
+    """
+    Resolve a user-facing chat slug to a ChatSpace. Returns the space, or
+    a 404 error response if unknown. Used by every `/chat/<slug>/...`
+    route.
+    """
+    space = chat_service.find_by_slug(slug)
+    if space is None:
+        return None, _error_response(
+            "Chat not found",
+            "This chat space no longer exists.",
+            status=404,
+        )
+    return space, None
+
+
 # ---------------------------------------------------------------------------
 # Magic-link entry
 # ---------------------------------------------------------------------------
@@ -165,7 +181,7 @@ def chat_invite(token: str):
     )
 
     resp = make_response(
-        "", 302, {"Location": f"/chat/{space.id}"}
+        "", 302, {"Location": f"/chat/{space.public_slug or space.id}"}
     )
     resp.set_cookie(
         SESSION_COOKIE,
@@ -182,14 +198,14 @@ def chat_invite(token: str):
 # Chat page
 # ---------------------------------------------------------------------------
 
-@bp.route("/chat/<int:space_id>", methods=["GET"])
-def chat_page(space_id: int):
-    sess, err = _require_session_for_space(space_id)
+@bp.route("/chat/<slug>", methods=["GET"])
+def chat_page(slug: str):
+    space, err = _resolve_slug(slug)
     if err is not None:
         return err
-    space = find_by_id(space_id)
-    if space is None:
-        return _error_response("Chat not found", "This chat space no longer exists.", status=404)
+    sess, err = _require_session_for_space(space.id)
+    if err is not None:
+        return err
 
     # Same title for everyone: "<Campaign> X <Creator>", e.g. "Influuu X Virat".
     # Falls back to brand_name if campaign_name is missing.
@@ -210,16 +226,19 @@ def chat_page(space_id: int):
 # Messages (poll + post)
 # ---------------------------------------------------------------------------
 
-@bp.route("/chat/<int:space_id>/messages", methods=["GET"])
-def chat_messages_poll(space_id: int):
-    sess, err = _require_session_for_space(space_id)
+@bp.route("/chat/<slug>/messages", methods=["GET"])
+def chat_messages_poll(slug: str):
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
     if err is not None:
         return err
     try:
         since = int(request.args.get("since", "0"))
     except ValueError:
         since = 0
-    msgs = chat_service.list_messages(chat_space_id=space_id, since_id=since)
+    msgs = chat_service.list_messages(chat_space_id=space.id, since_id=since)
     return jsonify({"messages": msgs})
 
 
@@ -241,16 +260,18 @@ def _rate_limited(session_id: int) -> bool:
     return False
 
 
-@bp.route("/chat/<int:space_id>/messages", methods=["POST"])
-def chat_messages_post(space_id: int):
-    sess, err = _require_session_for_space(space_id)
+@bp.route("/chat/<slug>/messages", methods=["POST"])
+def chat_messages_post(slug: str):
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
     if err is not None:
         return err
     if _rate_limited(sess.id):
         return jsonify({"error": "rate_limited"}), 429
 
-    space = find_by_id(space_id)
-    if space is None or space.status != "active":
+    if space.status != "active":
         return jsonify({"error": "chat_closed"}), 410
 
     body = (request.form.get("body") or "").strip()
@@ -261,7 +282,7 @@ def chat_messages_post(space_id: int):
 
     has_file = bool(file and file.filename)
     msg = chat_service.post_message(
-        chat_space_id=space_id,
+        chat_space_id=space.id,
         sender_party=sess.party,
         sender_identifier=sess.identifier,
         sender_display_name=sess.display_name,
@@ -295,16 +316,19 @@ def chat_messages_post(space_id: int):
     # Notify the other side out-of-band (Slack/email), best-effort.
     try:
         from services.chat_notifications import notify_new_message
-        notify_new_message(chat_space_id=space_id, sender_party=sess.party, message_id=msg.id)
+        notify_new_message(chat_space_id=space.id, sender_party=sess.party, message_id=msg.id)
     except Exception as exc:
         logger.warning("chat notification dispatch failed: %s", exc)
 
     return jsonify({"ok": True, "id": msg.id})
 
 
-@bp.route("/chat/<int:space_id>/messages/<int:message_id>/react", methods=["POST"])
-def chat_message_react(space_id: int, message_id: int):
-    sess, err = _require_session_for_space(space_id)
+@bp.route("/chat/<slug>/messages/<int:message_id>/react", methods=["POST"])
+def chat_message_react(slug: str, message_id: int):
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
     if err is not None:
         return err
     body = request.get_json(silent=True) or {}
@@ -320,20 +344,24 @@ def chat_message_react(space_id: int, message_id: int):
     return jsonify({"ok": True, "active": now_present})
 
 
-@bp.route("/chat/<int:space_id>/stream", methods=["GET"])
-def chat_stream(space_id: int):
+@bp.route("/chat/<slug>/stream", methods=["GET"])
+def chat_stream(slug: str):
     """
     Server-Sent Events stream for a chat space. The browser subscribes here
     and receives `message`, `reaction`, `read`, `typing`, and `ping`
     events. Each open connection holds one gthread for its lifetime — see
     Procfile `--threads` tuning.
     """
-    sess, err = _require_session_for_space(space_id)
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
     if err is not None:
         return err
 
     self_party = sess.party
     self_identifier = sess.identifier
+    space_id = space.id
 
     try:
         sub_ctx = pubsub_subscribe(space_id).__enter__()
@@ -366,13 +394,16 @@ def chat_stream(space_id: int):
     return Response(generator(), headers=headers)
 
 
-@bp.route("/chat/<int:space_id>/typing", methods=["POST"])
-def chat_typing(space_id: int):
-    sess, err = _require_session_for_space(space_id)
+@bp.route("/chat/<slug>/typing", methods=["POST"])
+def chat_typing(slug: str):
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
     if err is not None:
         return err
     maybe_publish_typing(
-        space_id=space_id,
+        space_id=space.id,
         party=sess.party,
         identifier=sess.identifier,
         display_name=sess.display_name,
@@ -380,9 +411,12 @@ def chat_typing(space_id: int):
     return jsonify({"ok": True})
 
 
-@bp.route("/chat/<int:space_id>/read", methods=["POST"])
-def chat_messages_read(space_id: int):
-    sess, err = _require_session_for_space(space_id)
+@bp.route("/chat/<slug>/read", methods=["POST"])
+def chat_messages_read(slug: str):
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
     if err is not None:
         return err
     body = request.get_json(silent=True) or {}
@@ -392,7 +426,7 @@ def chat_messages_read(space_id: int):
         up_to = 0
     if up_to:
         chat_service.mark_read(
-            chat_space_id=space_id,
+            chat_space_id=space.id,
             party=sess.party,
             identifier=sess.identifier,
             up_to_message_id=up_to,

@@ -21,10 +21,10 @@ CHAT_PAGE = """\
     :root { color-scheme: light; }
     html, body { background:#f4f5f7; color:#1d1d1f; height:100%; margin:0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display:flex; flex-direction:column; }
-    header.bar { padding:14px 20px; background:#fff; border-bottom:1px solid #e5e5ea; }
+    header.bar { background:#fff; border-bottom:1px solid #e5e5ea; }
+    header.bar .bar-inner { max-width:780px; margin:0 auto; padding:14px 16px; box-sizing:border-box; }
     header.bar h1 { font-size:16px; margin:0; }
     header.bar .meta { font-size:13px; color:#6b7280; margin-top:2px; }
-    .banner { background:#fff7ed; color:#92400e; padding:8px 20px; font-size:13px; border-bottom:1px solid #fde7c2; }
     main { flex:1; overflow-y:auto; padding:16px; max-width:780px; width:100%; margin:0 auto; box-sizing:border-box; }
     .msg { display:flex; margin:8px 0; }
     .msg.me { justify-content:flex-end; }
@@ -57,12 +57,13 @@ CHAT_PAGE = """\
     @keyframes typing { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
   </style>
 </head>
-<body data-space-id="{{ space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status == 'archived' else 'false' }}">
+<body data-space-slug="{{ space.public_slug or space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status == 'archived' else 'false' }}">
   <header class="bar">
-    <h1>{{ chat_title }}</h1>
-    <div class="meta">Campaign: {{ space.campaign_name or '—' }} · Brand: {{ space.brand_name or '—' }}</div>
+    <div class="bar-inner">
+      <h1>{{ chat_title }}</h1>
+      <div class="meta">Campaign: {{ space.campaign_name or '—' }} · Brand: {{ space.brand_name or '—' }}</div>
+    </div>
   </header>
-  <div class="banner">Influence staff may review this conversation for quality and compliance.</div>
   {% if space.status == 'archived' %}
   <div class="archived">This campaign has ended — chat is archived and read-only.</div>
   {% endif %}
@@ -85,7 +86,7 @@ CHAT_PAGE = """\
 <script>
 (function() {
   const bodyEl = document.body;
-  const spaceId = bodyEl.dataset.spaceId;
+  const spaceSlug = bodyEl.dataset.spaceSlug;
   const selfParty = bodyEl.dataset.selfParty;
   const archived = bodyEl.dataset.archived === 'true';
   const messagesEl = document.getElementById('messages');
@@ -183,7 +184,7 @@ CHAT_PAGE = """\
 
   function sendRead() {
     if (!lastId) return;
-    fetch('/chat/' + spaceId + '/read', {
+    fetch('/chat/' + spaceSlug + '/read', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ up_to: lastId }),
@@ -192,7 +193,7 @@ CHAT_PAGE = """\
 
   async function backfill() {
     try {
-      const r = await fetch('/chat/' + spaceId + '/messages?since=' + lastId, { credentials: 'same-origin' });
+      const r = await fetch('/chat/' + spaceSlug + '/messages?since=' + lastId, { credentials: 'same-origin' });
       if (!r.ok) return;
       const data = await r.json();
       if (data.messages && data.messages.length) {
@@ -225,7 +226,7 @@ CHAT_PAGE = """\
   let sse = null;
   function connectSSE() {
     if (typeof EventSource === 'undefined') return;
-    try { sse = new EventSource('/chat/' + spaceId + '/stream'); } catch (e) { return; }
+    try { sse = new EventSource('/chat/' + spaceSlug + '/stream'); } catch (e) { return; }
     sse.addEventListener('hello', () => backfill());
     sse.addEventListener('message', (ev) => {
       try {
@@ -283,7 +284,7 @@ CHAT_PAGE = """\
     if (!body && !file) return;
     sendBtn.disabled = true;
     try {
-      const r = await fetch('/chat/' + spaceId + '/messages', {
+      const r = await fetch('/chat/' + spaceSlug + '/messages', {
         method: 'POST', credentials: 'same-origin', body: form,
       });
       if (r.ok) {
@@ -305,7 +306,7 @@ CHAT_PAGE = """\
     const now = Date.now();
     if (now - lastTypingPing < 2000) return;
     lastTypingPing = now;
-    fetch('/chat/' + spaceId + '/typing', { method: 'POST', credentials: 'same-origin' })
+    fetch('/chat/' + spaceSlug + '/typing', { method: 'POST', credentials: 'same-origin' })
       .catch(() => {});
   }
   bodyInput.addEventListener('keydown', e => {
@@ -333,7 +334,7 @@ CHAT_PAGE = """\
     const emoji = e.target.textContent;
     emojiPop.style.display = 'none';
     if (emojiTargetMsg) {
-      fetch('/chat/' + spaceId + '/messages/' + emojiTargetMsg + '/react', {
+      fetch('/chat/' + spaceSlug + '/messages/' + emojiTargetMsg + '/react', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emoji }),
@@ -356,7 +357,7 @@ CHAT_PAGE = """\
       emojiPop.style.display = 'block';
       return;
     }
-    fetch('/chat/' + spaceId + '/messages/' + msgId + '/react', {
+    fetch('/chat/' + spaceSlug + '/messages/' + msgId + '/react', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ emoji: btn.dataset.emoji }),
