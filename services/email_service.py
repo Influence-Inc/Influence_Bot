@@ -1,21 +1,25 @@
 """
 Email service for INFLUENCE Bot.
-Sends professional emails from jennifer@useinfluence.xyz via SMTP.
+
+Sends email via the Resend HTTPS API. We use Resend because Railway blocks
+outbound SMTP on most plans, which made the previous Gmail SMTP integration
+unreliable. Both useinfluence.xyz and influence.technology must be verified
+on the Resend account that issued RESEND_API_KEY.
 """
 
 import logging
-import smtplib
-import socket
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from enum import Enum
 
+import requests
 from sqlalchemy.exc import IntegrityError
 
 from config import Config
 from models.models import SessionLocal, EmailLog
 
 logger = logging.getLogger(__name__)
+
+RESEND_API_URL = "https://api.resend.com/emails"
+RESEND_TIMEOUT_SECONDS = 20
 
 
 class EmailSendResult(str, Enum):
@@ -24,29 +28,10 @@ class EmailSendResult(str, Enum):
     FAILED = "failed"
 
 
-class _IPv4SMTP(smtplib.SMTP):
-    """SMTP that resolves the host to IPv4 only.
-
-    Railway containers expose IPv6 in DNS but have no IPv6 default route, so
-    ``socket.create_connection`` fails with ``[Errno 101] Network is
-    unreachable`` before ever falling back to IPv4. Restricting resolution to
-    AF_INET avoids that. ``self._host`` is left as the hostname so STARTTLS
-    SNI and certificate verification still work.
-    """
-
-    def _get_socket(self, host, port, timeout):
-        addrinfo = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-        if not addrinfo:
-            raise OSError(f"No IPv4 address resolved for {host}")
-        return socket.create_connection(addrinfo[0][4], timeout, self.source_address)
-
-
 class EmailService:
     def __init__(self):
-        self.host = Config.SMTP_HOST
-        self.port = Config.SMTP_PORT
-        self.username = Config.SMTP_USERNAME
-        self.password = Config.SMTP_PASSWORD
+        self.api_key = Config.RESEND_API_KEY
+        self.from_address = Config.EMAIL_FROM_ADDRESS
         self.from_name = Config.EMAIL_FROM_NAME
 
     def send_email(
@@ -59,59 +44,63 @@ class EmailService:
         from_name: str = None,
     ) -> bool:
         """
-        Send an email via SMTP.
+        Send an email via the Resend API.
 
-        `from_email` / `from_name` override the From header for this send
-        only — useful for the chat-notification flow that mails creators
-        as contact@influence.technology even though the SMTP account is
-        authenticated as jennifer@useinfluence.xyz. The override address
-        must be configured as a verified send-as alias on the SMTP account
-        or the provider will reject the send.
+        `from_email` / `from_name` override the From header for this send only
+        — used by the chat-notification flow that mails creators as
+        contact@influence.technology even though the default sender is
+        jennifer@useinfluence.xyz. The override domain must also be verified
+        on Resend or the API will reject the send.
         """
-        if not self.password:
+        if not self.api_key:
             logger.error(
-                "SMTP_PASSWORD is not set; cannot send email to %s. "
-                "Set SMTP_PASSWORD in Railway (use a Gmail App Password).",
+                "RESEND_API_KEY is not set; cannot send email to %s. "
+                "Set RESEND_API_KEY in Railway.",
                 to_email,
             )
             return False
 
-        effective_from_email = from_email or self.username
+        effective_from_email = from_email or self.from_address
         effective_from_name = from_name or self.from_name
 
+        payload = {
+            "from": f"{effective_from_name} <{effective_from_email}>",
+            "to": [to_email],
+            "subject": subject,
+            "text": body,
+        }
+        if cc:
+            payload["cc"] = [cc]
+
         try:
-            msg = MIMEMultipart()
-            msg["From"] = f"{effective_from_name} <{effective_from_email}>"
-            msg["To"] = to_email
-            msg["Subject"] = subject
-            if cc:
-                msg["Cc"] = cc
-
-            msg.attach(MIMEText(body, "plain"))
-
-            recipients = [to_email]
-            if cc:
-                recipients.append(cc)
-
-            with _IPv4SMTP(self.host, self.port, timeout=20) as server:
-                server.starttls()
-                server.login(self.username, self.password)
-                # Envelope sender uses the override address too. Gmail will
-                # 550 here if the override isn't a verified send-as alias.
-                server.sendmail(effective_from_email, recipients, msg.as_string())
-
-            logger.info(
-                "Email sent to %s as %s: %s",
-                to_email, effective_from_email, subject,
+            response = requests.post(
+                RESEND_API_URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=RESEND_TIMEOUT_SECONDS,
             )
-            return True
-
-        except Exception as e:
+        except requests.RequestException as e:
             logger.error(
-                "Failed to send email to %s as %s: %s",
+                "Failed to reach Resend API for %s as %s: %s",
                 to_email, effective_from_email, e,
             )
             return False
+
+        if response.status_code >= 400:
+            logger.error(
+                "Resend rejected email to %s as %s (HTTP %s): %s",
+                to_email, effective_from_email, response.status_code, response.text,
+            )
+            return False
+
+        logger.info(
+            "Email sent to %s as %s: %s",
+            to_email, effective_from_email, subject,
+        )
+        return True
 
     def send_followup(self, to_email: str, template_data: dict) -> bool:
         """Send a follow-up email using a template dict with 'subject' and 'body'."""
@@ -130,9 +119,9 @@ class EmailService:
         creator_username: str,
     ) -> EmailSendResult:
         """
-        Idempotent follow-up send. Checks EmailLog first; only attempts SMTP
+        Idempotent follow-up send. Checks EmailLog first; only attempts to send
         if no row exists for (recipient, template_type, campaign, creator).
-        On SMTP failure, no row is written — the next call will retry.
+        On send failure, no row is written — the next call will retry.
         """
         db = SessionLocal()
         try:

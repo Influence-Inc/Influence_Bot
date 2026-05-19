@@ -59,11 +59,12 @@ class Config:
         os.environ.get("SLACK_CHANNEL_DEADLINES") or SLACK_CHANNEL_ID or "#creator-deadlines"
     )
 
-    # --- Email (jennifer@useinfluence.xyz) ---
-    SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
-    SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "jennifer@useinfluence.xyz")
-    SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
+    # --- Email (Resend HTTP API) ---
+    # Railway blocks outbound SMTP on most plans, so we send via Resend's HTTPS
+    # API instead of Gmail SMTP. Domains useinfluence.xyz and influence.technology
+    # must be verified on the Resend account that issued RESEND_API_KEY.
+    RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+    EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "jennifer@useinfluence.xyz")
     EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Jennifer - INFLUENCE")
 
     # --- Application ---
@@ -120,9 +121,9 @@ class Config:
     # they need to outlive the typical 7-day creator link. Default 90 days.
     CHAT_BRAND_LINK_TTL = int(os.environ.get("CHAT_BRAND_LINK_TTL", str(90 * 24 * 3600)))
 
-    # Address that chat-related notification emails are sent FROM. Must be an
-    # authorized send-as alias on the SMTP account (Gmail: Settings -> Accounts
-    # -> "Send mail as"), otherwise SMTP will reject the send.
+    # Address that chat-related notification emails are sent FROM. The domain
+    # of this address must be verified on Resend, otherwise the API will reject
+    # the send.
     CHAT_NOTIFICATION_FROM_EMAIL = os.environ.get(
         "CHAT_NOTIFICATION_FROM_EMAIL", "contact@influence.technology"
     )
