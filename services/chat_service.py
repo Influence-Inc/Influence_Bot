@@ -80,9 +80,15 @@ def get_or_create_for_review(
     workspace_team_id: Optional[str] = None,
 ) -> Optional[ChatSpace]:
     """
-    Called when a brand requests changes on a review. Reuses an active chat
-    space if one already exists for (creator, campaign, brand); otherwise
-    creates a new one.
+    Called when a brand requests changes on a review.
+
+    One chat space per review submission: each new review link gets its
+    own ChatSpace, so the "Request Changes" button baked into review N's
+    Slack message always routes the brand to space N regardless of how
+    many other reviews exist for the same (creator, campaign, brand).
+    Reuses the existing space for *this* review_id if one has already
+    been created (idempotent across webhook retries and repeated button
+    clicks).
 
     Returns a detached ChatSpace (or None if the review can't be found).
     """
@@ -101,11 +107,15 @@ def get_or_create_for_review(
             brand_name=review.brand_name,
         )
 
+        # One chat space per review submission. Re-use only the space that
+        # was created for THIS review (and only if it hasn't been archived
+        # by a campaign-end event yet); never collapse onto a sibling
+        # review's space.
         existing = (
             db.query(ChatSpace)
             .filter(
-                ChatSpace.reuse_key == reuse_key,
-                ChatSpace.status == "active",
+                ChatSpace.latest_review_id == review.id,
+                ChatSpace.status != "archived",
             )
             .order_by(ChatSpace.created_at.desc())
             .first()
@@ -116,7 +126,6 @@ def get_or_create_for_review(
         resolved_team_id = workspace_team_id or (brand_install.team_id if brand_install else None)
 
         if existing is not None:
-            existing.latest_review_id = review.id
             if resolved_team_id and not existing.workspace_team_id:
                 existing.workspace_team_id = resolved_team_id
             if brand_install_id and not existing.brand_install_id:
@@ -140,19 +149,7 @@ def get_or_create_for_review(
             status="active",
         )
         db.add(space)
-        try:
-            db.commit()
-        except IntegrityError:
-            # Concurrent create — fall back to the existing row.
-            db.rollback()
-            space = (
-                db.query(ChatSpace)
-                .filter(ChatSpace.reuse_key == reuse_key, ChatSpace.status == "active")
-                .order_by(ChatSpace.created_at.desc())
-                .first()
-            )
-            if space is None:
-                raise
+        db.commit()
         db.refresh(space)
 
         # Pre-create stable member rows. Identifier conventions:
@@ -183,6 +180,26 @@ def get_or_create_for_review(
         db.refresh(space)
         db.expunge(space)
         return space
+    finally:
+        db.close()
+
+
+def find_by_review_id(review_id: int) -> Optional[ChatSpace]:
+    """Return the (most recent) chat space tied to a review, or None."""
+    if not review_id:
+        return None
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(ChatSpace)
+            .filter(ChatSpace.latest_review_id == review_id)
+            .order_by(ChatSpace.created_at.desc())
+            .first()
+        )
+        if row is None:
+            return None
+        db.expunge(row)
+        return row
     finally:
         db.close()
 
@@ -607,6 +624,26 @@ def archive_space(chat_space_id: int) -> bool:
     return True
 
 
+def close_for_approval(chat_space_id: int) -> bool:
+    """
+    Mark a chat space as 'approved' — closes it for brand + creator
+    (sessions revoked, magic-link re-entry blocked, no new messages)
+    while leaving it fully readable from the admin dashboard. The space
+    is only fully archived once the parent campaign ends.
+    """
+    db = SessionLocal()
+    try:
+        space = db.query(ChatSpace).get(chat_space_id)
+        if space is None or space.status != "active":
+            return False
+        space.status = "approved"
+        db.commit()
+    finally:
+        db.close()
+    revoke_sessions_for_space(chat_space_id)
+    return True
+
+
 def reopen_space(chat_space_id: int) -> bool:
     """Re-activate an archived chat space. Sessions stay revoked — both
     parties need fresh magic links."""
@@ -634,7 +671,10 @@ def archive_for_campaign(
         return 0
     db = SessionLocal()
     try:
-        q = db.query(ChatSpace).filter(ChatSpace.status == "active")
+        # Archive both still-open chat spaces ("active") and ones already
+        # closed by an approval ("approved") so the admin record gets
+        # marked read-only once the campaign formally ends.
+        q = db.query(ChatSpace).filter(ChatSpace.status != "archived")
         if campaign_slug:
             q = q.filter(ChatSpace.campaign_slug == campaign_slug)
         elif campaign_name:
@@ -705,6 +745,7 @@ def admin_stats() -> dict:
     db = SessionLocal()
     try:
         active = db.query(ChatSpace).filter(ChatSpace.status == "active").count()
+        approved = db.query(ChatSpace).filter(ChatSpace.status == "approved").count()
         archived = db.query(ChatSpace).filter(ChatSpace.status == "archived").count()
         creators = (
             db.query(ChatSpace.creator_username)
@@ -740,6 +781,7 @@ def admin_stats() -> dict:
 
         return {
             "active": active,
+            "approved": approved,
             "archived": archived,
             "active_creators": creators,
             "recently_active": recently_active,

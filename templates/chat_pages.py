@@ -46,6 +46,7 @@ CHAT_PAGE = """\
     .emoji-pop { position:absolute; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:6px; box-shadow:0 6px 24px rgba(0,0,0,.08); display:none; }
     .emoji-pop button { background:transparent; border:0; font-size:18px; cursor:pointer; padding:4px; }
     .archived { background:#fef2f2; color:#991b1b; padding:10px 20px; font-size:13px; }
+    .approved-banner { background:#ecfdf5; color:#065f46; padding:10px 20px; font-size:13px; }
     .unread-pill { display:inline-block; background:#ef4444; color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; margin-left:6px; }
     .receipts { font-size:11px; color:#9ca3af; margin-left:6px; }
     .receipts.read { color:#2563eb; }
@@ -57,7 +58,7 @@ CHAT_PAGE = """\
     @keyframes typing { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
   </style>
 </head>
-<body data-space-slug="{{ space.public_slug or space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status == 'archived' else 'false' }}">
+<body data-space-slug="{{ space.public_slug or space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status != 'active' else 'false' }}">
   <header class="bar">
     <div class="bar-inner">
       <h1>{{ chat_title }}</h1>
@@ -66,6 +67,8 @@ CHAT_PAGE = """\
   </header>
   {% if space.status == 'archived' %}
   <div class="archived">This campaign has ended — chat is archived and read-only.</div>
+  {% elif space.status == 'approved' %}
+  <div class="approved-banner">This review has been approved — chat is closed and read-only.</div>
   {% endif %}
   <main id="messages"></main>
   <div class="typing-bar" id="typingBar"></div>
@@ -74,8 +77,8 @@ CHAT_PAGE = """\
       <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
       <button type="button" class="iconbtn" id="fileBtn" title="Attach image">📎</button>
       <button type="button" class="iconbtn" id="emojiBtn" title="Emoji">😀</button>
-      <textarea id="bodyInput" placeholder="Type a message…" {% if space.status == 'archived' %}disabled{% endif %}></textarea>
-      <button type="submit" id="sendBtn" {% if space.status == 'archived' %}disabled{% endif %}>Send</button>
+      <textarea id="bodyInput" placeholder="Type a message…" {% if space.status != 'active' %}disabled{% endif %}></textarea>
+      <button type="submit" id="sendBtn" {% if space.status != 'active' %}disabled{% endif %}>Send</button>
     </form>
     <div class="emoji-pop" id="emojiPop">
       <button>👍</button><button>❤️</button><button>🎉</button><button>🔥</button><button>😂</button><button>👀</button><button>🙏</button><button>✅</button>
@@ -420,11 +423,13 @@ a.row { color:#1d4ed8; text-decoration:none; }
 .tag { display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; }
 .tag.active { background:#dcfce7; color:#166534; }
 .tag.archived { background:#fee2e2; color:#991b1b; }
+.tag.approved { background:#dbeafe; color:#1e3a8a; }
 </style></head><body>
 <div class="container">
 <h1>Chat spaces</h1>
 <div class="stats">
   <div class="stat"><div class="v">{{ stats.active }}</div><div class="l">Active</div></div>
+  <div class="stat"><div class="v">{{ stats.approved }}</div><div class="l">Approved</div></div>
   <div class="stat"><div class="v">{{ stats.archived }}</div><div class="l">Archived</div></div>
   <div class="stat"><div class="v">{{ stats.active_creators }}</div><div class="l">Active creators</div></div>
   <div class="stat"><div class="v">{{ stats.recently_active }}</div><div class="l">Active 7d</div></div>
@@ -450,6 +455,7 @@ a.row { color:#1d4ed8; text-decoration:none; }
 <div class="chips">
   <a href="/admin/chats" class="{% if not query.status %}on{% endif %}">All</a>
   <a href="/admin/chats?status=active" class="{% if query.status == 'active' %}on{% endif %}">Active</a>
+  <a href="/admin/chats?status=approved" class="{% if query.status == 'approved' %}on{% endif %}">Approved</a>
   <a href="/admin/chats?status=archived" class="{% if query.status == 'archived' %}on{% endif %}">Archived</a>
 </div>
 <table>
@@ -523,6 +529,7 @@ h1 { font-size:18px; margin:0 0 4px; }
 </div>
 
 {% if space.status == 'archived' %}<div class="archived-note">This chat is archived. Reopen it before posting; existing sessions stay revoked, so both parties will need fresh magic links.</div>{% endif %}
+{% if space.status == 'approved' %}<div class="archived-note" style="background:#ecfdf5;color:#065f46;">This review was approved. The chat is closed for the brand and creator but stays here as a record. It will be archived automatically when the campaign ends.</div>{% endif %}
 
 {% for m in messages %}
 <div class="msg party-{{ m.party }}">
