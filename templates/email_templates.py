@@ -121,7 +121,6 @@ Open the chat here (this link will sign you in automatically):
 Inside the chat you can reply with messages and screenshots. Future review submissions on this campaign will use the same chat — no need to start over.
 
 Talk soon,
-Jennifer
 INFLUENCE Team
 """
     return {"subject": subject, "body": body}
@@ -144,7 +143,6 @@ Reply here:
 {chat_url}
 
 Best,
-Jennifer
 INFLUENCE Team
 """
     return {"subject": subject, "body": body}

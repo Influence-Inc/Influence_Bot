@@ -128,7 +128,7 @@ class Config:
         "CHAT_NOTIFICATION_FROM_EMAIL", "contact@influence.technology"
     )
     CHAT_NOTIFICATION_FROM_NAME = os.environ.get(
-        "CHAT_NOTIFICATION_FROM_NAME", "INFLUENCE"
+        "CHAT_NOTIFICATION_FROM_NAME", "INFLUENCE Team"
     )
 
     # --- Testing ---
