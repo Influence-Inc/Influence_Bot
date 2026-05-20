@@ -351,6 +351,41 @@ def build_review_submitted_blocks(
     return blocks
 
 
+def build_review_approved_blocks(
+    creator_username: str,
+    campaign_name: str,
+    brand_name: str,
+    video_link: str,
+    actor_name: str,
+) -> list[dict]:
+    """
+    Notification posted to the admin #content-reviews channel after a brand
+    clicks Approve on a review. Distinct from the updated-in-place review
+    message so the admin team gets a fresh ping even when the click came
+    from the brand's own workspace.
+    """
+    body_lines = [":white_check_mark: *Review approved*", ""]
+    if brand_name:
+        body_lines.append(f"*Brand:* {brand_name}")
+    if campaign_name:
+        body_lines.append(f"*Campaign:* {campaign_name}")
+    if creator_username:
+        body_lines.append(f"*Creator:* @{creator_username}")
+    if video_link:
+        body_lines.append(f"*Link:* {video_link}")
+    if actor_name:
+        body_lines.append("")
+        body_lines.append(f":bust_in_silhouette: Approved by *{actor_name}*")
+
+    return [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "\n".join(body_lines).rstrip()},
+        },
+        {"type": "divider"},
+    ]
+
+
 _PLATFORM_LABELS = {
     "instagram": "Reels",
     "tiktok": "Tiktok",

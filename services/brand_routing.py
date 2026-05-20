@@ -81,23 +81,27 @@ def post_to_brand_workspace(
     brand_name: Optional[str],
     text: str,
     blocks: list[dict],
-) -> None:
+) -> tuple[Optional[str], Optional[str]]:
     """
     Mirror an admin-channel notification to the brand's own workspace if
     they've installed the bot via /slack/install. No-op for brands that
     haven't installed (or whose install row has no channel/token yet).
     Failures are logged and swallowed so a broken brand install never
     blocks admin notifications.
+
+    Returns `(channel_id, ts)` for the posted message so callers can thread
+    follow-ups under it. Returns `(None, None)` on no-op or failure.
     """
     install = find_install_for_brand_name(brand_name)
     if install is None or not install.bot_token or not install.channel_id:
-        return
+        return None, None
     try:
-        WebClient(token=install.bot_token).chat_postMessage(
+        response = WebClient(token=install.bot_token).chat_postMessage(
             channel=install.channel_id,
             text=text,
             blocks=blocks,
         )
+        return response.get("channel") or install.channel_id, response.get("ts")
     except SlackApiError as e:
         err = e.response.get("error") if e.response else str(e)
         logger.warning(
@@ -109,3 +113,4 @@ def post_to_brand_workspace(
             "Brand-workspace post failed: brand=%s error=%s",
             install_brand_label(install), e,
         )
+    return None, None

@@ -73,28 +73,59 @@ class WebhookHandler:
             )
             return False, None, None
 
-    def _build_brand_chat_url(self, review_id: int) -> str | None:
+    def _build_brand_chat_url(self, review_id: int) -> tuple[str | None, int | None]:
         """
-        Pre-create (or reuse) the chat space for this review and return the
-        brand's magic-link URL. Returns None — and the caller renders the
-        Request Changes button without a `url` field — if PUBLIC_BASE_URL
-        isn't configured or chat creation fails. The button still works as
-        a plain action button in that case.
+        Pre-create (or reuse) the chat space for this review. Returns
+        `(brand_magic_link, chat_space_id)`. The URL is `None` — and the
+        caller renders the Request Changes button without a `url` field —
+        if PUBLIC_BASE_URL isn't configured or chat creation fails. The
+        button still works as a plain action button in that case. The
+        chat_space_id is returned alongside so the caller can persist the
+        brand-workspace message ts for chat-reply threading.
         """
         if not Config.PUBLIC_BASE_URL:
-            return None
+            return None, None
         try:
             from services import chat_service
             from utils.chat_tokens import make_invite_token
 
             space = chat_service.get_or_create_for_review(review_id)
             if space is None:
-                return None
+                return None, None
             token = make_invite_token(chat_space_id=space.id, party="brand")
-            return f"{Config.PUBLIC_BASE_URL.rstrip('/')}/chat/invite/{token}"
+            url = f"{Config.PUBLIC_BASE_URL.rstrip('/')}/chat/invite/{token}"
+            return url, space.id
         except Exception as exc:
             logger.warning("Could not pre-build brand chat URL: %s", exc)
-            return None
+            return None, None
+
+    @staticmethod
+    def _anchor_chat_space_to_brand_message(
+        *, chat_space_id: int, channel: str | None, ts: str
+    ) -> None:
+        """
+        Persist (brand_slack_channel, brand_slack_ts) on the chat space so
+        future chat-reply notifications post as Slack thread replies under
+        this brand-workspace review_submitted message.
+        """
+        from models.models import ChatSpace
+
+        db = SessionLocal()
+        try:
+            space = db.query(ChatSpace).get(chat_space_id)
+            if space is None:
+                return
+            if channel:
+                space.brand_slack_channel = channel
+            space.brand_slack_ts = ts
+            db.commit()
+        except Exception as exc:
+            logger.warning(
+                "Could not anchor chat_space %s to brand message ts=%s: %s",
+                chat_space_id, ts, exc,
+            )
+        finally:
+            db.close()
 
     def handle_event(self, payload: dict) -> bool:
         """Route an incoming webhook event to the appropriate handler."""
@@ -199,7 +230,7 @@ class WebhookHandler:
             # uses both `url` and `action_id`: clicking it opens the chat in
             # the brand's browser AND fires our backend handler, which
             # records the decision + emails the creator.
-            brand_chat_url = self._build_brand_chat_url(review_id)
+            brand_chat_url, chat_space_id = self._build_brand_chat_url(review_id)
 
             admin_blocks = build_review_submitted_blocks(
                 creator_username=username,
@@ -244,7 +275,20 @@ class WebhookHandler:
                 show_meta=False,
                 chat_url=brand_chat_url,
             )
-            post_to_brand_workspace(brand_name, text, brand_blocks)
+            brand_channel, brand_ts = post_to_brand_workspace(
+                brand_name, text, brand_blocks
+            )
+
+            # Anchor chat-reply notifications to this review_submitted message
+            # in the brand workspace so each chat reply lands as a thread
+            # reply under it (instead of a top-level message). On reuse, the
+            # chat space "moves" to the newest review's brand-workspace post.
+            if chat_space_id and brand_ts:
+                self._anchor_chat_space_to_brand_message(
+                    chat_space_id=chat_space_id,
+                    channel=brand_channel,
+                    ts=brand_ts,
+                )
 
             if ok:
                 logger.info(
