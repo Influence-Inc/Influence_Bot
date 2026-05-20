@@ -6,8 +6,11 @@ Handles button clicks on notification messages.
 import logging
 from datetime import datetime, timezone
 
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 from sqlalchemy.exc import IntegrityError
 
+from config import Config
 from models.models import (
     PaymentRecord,
     ReviewSubmission,
@@ -17,10 +20,47 @@ from services.email_service import EmailService
 from services import chat_service
 from services.chat_notifications import notify_creator_changes_requested
 from templates.email_templates import video_approved
+from templates.slack_blocks import build_review_approved_blocks
 
 logger = logging.getLogger(__name__)
 
 _email_service = EmailService()
+
+
+def _post_admin_approval_notification(
+    *,
+    creator_username: str,
+    campaign_name: str,
+    brand_name: str,
+    video_link: str,
+    actor_name: str,
+) -> None:
+    """
+    Post a new top-level approval notification to the admin
+    #content-reviews channel. Uses the home-workspace SLACK_BOT_TOKEN so it
+    always lands in the admin Slack regardless of which workspace the
+    button click came from. Best-effort — failures are logged, not raised.
+    """
+    if not Config.SLACK_BOT_TOKEN or not Config.SLACK_CHANNEL_REVIEWS:
+        return
+    try:
+        blocks = build_review_approved_blocks(
+            creator_username=creator_username,
+            campaign_name=campaign_name,
+            brand_name=brand_name,
+            video_link=video_link,
+            actor_name=actor_name,
+        )
+        WebClient(token=Config.SLACK_BOT_TOKEN).chat_postMessage(
+            channel=Config.SLACK_CHANNEL_REVIEWS,
+            text=f"Review approved for @{creator_username}",
+            blocks=blocks,
+        )
+    except SlackApiError as e:
+        err = e.response.get("error") if e.response else str(e)
+        logger.warning("Admin approval notification failed: %s", err)
+    except Exception as e:
+        logger.warning("Admin approval notification failed: %s", e)
 
 
 def _strip_review_action_buttons(blocks: list[dict], review_id: int) -> list[dict]:
@@ -195,6 +235,8 @@ def register_actions(app):
             creator_email = row.creator_email
             creator_username = row.creator_username
             brand_name = row.brand_name or ""
+            campaign_name = row.campaign_name or ""
+            video_link = row.video_link or ""
         finally:
             db.close()
 
@@ -203,8 +245,12 @@ def register_actions(app):
             template = video_approved(
                 creator_name=creator_username, brand_name=brand_name
             )
-            email_sent = _email_service.send_approval_notification(
-                creator_email, template
+            email_sent = _email_service.send_email(
+                creator_email,
+                template["subject"],
+                template["body"],
+                from_email=Config.CHAT_NOTIFICATION_FROM_EMAIL,
+                from_name=Config.CHAT_NOTIFICATION_FROM_NAME,
             )
 
         # Update Slack message: drop the buttons, add an approval footer.
@@ -240,6 +286,19 @@ def register_actions(app):
                 )
             except Exception as e:
                 logger.error(f"Failed to update message after review_approve: {e}")
+
+        # Post a fresh approval notification to the admin #content-reviews
+        # channel. The click itself can land on the admin or the brand
+        # workspace (both render the same buttons) — this guarantees the
+        # admin team always sees the approval as a distinct event, even
+        # when the brand approves from their own workspace.
+        _post_admin_approval_notification(
+            creator_username=creator_username,
+            campaign_name=campaign_name,
+            brand_name=brand_name,
+            video_link=video_link,
+            actor_name=actor_name,
+        )
 
         logger.info(
             f"review_approve: review_id={review_id} "

@@ -163,7 +163,10 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
     if sender_party in ("creator", "admin"):
         install = _brand_install(space)
         brand_url = _chat_url(space.id, party="brand")
-        if install and install.bot_token and install.channel_id and brand_url:
+        # Prefer threading under the brand-workspace review_submitted message
+        # captured at post time; fall back to the install's default channel.
+        target_channel = space.brand_slack_channel or (install.channel_id if install else None)
+        if install and install.bot_token and target_channel and brand_url:
             blocks = build_chat_new_message_blocks(
                 creator_username=space.creator_username,
                 campaign_name=space.campaign_name or "—",
@@ -173,7 +176,7 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
             )
             try:
                 WebClient(token=install.bot_token).chat_postMessage(
-                    channel=install.channel_id,
+                    channel=target_channel,
                     text=f"New chat message from @{space.creator_username}",
                     blocks=blocks,
                     thread_ts=space.brand_slack_ts or None,
