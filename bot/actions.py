@@ -253,6 +253,21 @@ def register_actions(app):
                 from_name=Config.CHAT_NOTIFICATION_FROM_NAME,
             )
 
+        # Close the chat space attached to this review: revokes the
+        # brand/creator sessions and flips the space to "approved" so the
+        # admin dashboard keeps full visibility while the campaign is
+        # still running. The space is only fully archived when the
+        # campaign ends.
+        try:
+            space = chat_service.find_by_review_id(review_id)
+            if space is not None and space.status == "active":
+                chat_service.close_for_approval(space.id)
+        except Exception as exc:
+            logger.warning(
+                "Could not close chat space for review %s on approval: %s",
+                review_id, exc,
+            )
+
         # Update Slack message: drop the buttons, add an approval footer.
         updated_blocks = _strip_review_action_buttons(original_blocks, review_id)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
