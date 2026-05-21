@@ -81,16 +81,22 @@ def _load_space(chat_space_id: int) -> Optional[ChatSpace]:
 
 def notify_creator_changes_requested(*, chat_space_id: int, actor_name: str = "") -> bool:
     """
-    Fired on every Request-Changes click. Emails the creator a fresh
-    chat-invite (from contact@influence.technology by default) with their
-    magic link. Returns True if the email was sent successfully.
-
-    There is intentionally NO Slack notification fan-out here: the brand
-    is being redirected directly into the chat by the URL on the Slack
-    button itself, so there's nothing to announce in their channel.
+    Fired on every Request-Changes click, but the chat-invite email is
+    only sent the FIRST time a given chat space is opened — subsequent
+    clicks on the same review's button are no-ops here (the brand still
+    gets jumped into the chat by the button's URL; chat replies still
+    fan out to the creator via notify_new_message). Returns True only on
+    the call that actually sent an email.
     """
     space = _load_space(chat_space_id)
     if space is None or not space.creator_email:
+        return False
+
+    if space.creator_invited_at is not None:
+        logger.info(
+            "Skipping duplicate chat-invite email for chat_space %s (creator already invited at %s)",
+            space.id, space.creator_invited_at,
+        )
         return False
 
     creator_url = _chat_url(space.id, party="creator", identifier=space.creator_email)
@@ -104,7 +110,7 @@ def notify_creator_changes_requested(*, chat_space_id: int, actor_name: str = ""
             campaign_name=space.campaign_name or "your campaign",
             chat_url=creator_url,
         )
-        return _email_service.send_email(
+        sent = _email_service.send_email(
             space.creator_email,
             tmpl["subject"],
             tmpl["body"],
@@ -114,6 +120,30 @@ def notify_creator_changes_requested(*, chat_space_id: int, actor_name: str = ""
     except Exception as exc:
         logger.warning("notify_creator_changes_requested email failed: %s", exc)
         return False
+
+    if sent:
+        _mark_creator_invited(chat_space_id)
+    return sent
+
+
+def _mark_creator_invited(chat_space_id: int) -> None:
+    """Stamp `creator_invited_at` so future clicks don't re-email the creator."""
+    from datetime import datetime, timezone
+
+    db = SessionLocal()
+    try:
+        row = db.query(ChatSpace).get(chat_space_id)
+        if row is None or row.creator_invited_at is not None:
+            return
+        row.creator_invited_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Could not stamp creator_invited_at on chat_space %s: %s",
+            chat_space_id, exc,
+        )
+    finally:
+        db.close()
 
 
 def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int) -> None:
