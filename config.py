@@ -121,16 +121,6 @@ class Config:
     # they need to outlive the typical 7-day creator link. Default 90 days.
     CHAT_BRAND_LINK_TTL = int(os.environ.get("CHAT_BRAND_LINK_TTL", str(90 * 24 * 3600)))
 
-    # Address that chat-related notification emails are sent FROM. The domain
-    # of this address must be verified on Resend, otherwise the API will reject
-    # the send.
-    CHAT_NOTIFICATION_FROM_EMAIL = os.environ.get(
-        "CHAT_NOTIFICATION_FROM_EMAIL", "contact@influence.technology"
-    )
-    CHAT_NOTIFICATION_FROM_NAME = os.environ.get(
-        "CHAT_NOTIFICATION_FROM_NAME", "INFLUENCE Team"
-    )
-
     # --- Testing ---
     # If set, the bot only processes the campaign with this exact name.
     # Leave empty/unset in production to process all campaigns.

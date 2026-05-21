@@ -46,11 +46,10 @@ class EmailService:
         """
         Send an email via the Resend API.
 
-        `from_email` / `from_name` override the From header for this send only
-        — used by the chat-notification flow that mails creators as
-        contact@influence.technology even though the default sender is
-        jennifer@useinfluence.xyz. The override domain must also be verified
-        on Resend or the API will reject the send.
+        Defaults the From header to EMAIL_FROM_ADDRESS / EMAIL_FROM_NAME
+        (jennifer@useinfluence.xyz). `from_email` / `from_name` can override
+        for a single send, but the override domain must also be verified on
+        Resend or the API will reject the send.
         """
         if not self.api_key:
             logger.error(
