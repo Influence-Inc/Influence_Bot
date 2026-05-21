@@ -249,8 +249,6 @@ def register_actions(app):
                 creator_email,
                 template["subject"],
                 template["body"],
-                from_email=Config.CHAT_NOTIFICATION_FROM_EMAIL,
-                from_name=Config.CHAT_NOTIFICATION_FROM_NAME,
             )
 
         # Close the chat space attached to this review: revokes the

@@ -120,8 +120,6 @@ def notify_creator_changes_requested(
             space.creator_email,
             tmpl["subject"],
             tmpl["body"],
-            from_email=Config.CHAT_NOTIFICATION_FROM_EMAIL,
-            from_name=Config.CHAT_NOTIFICATION_FROM_NAME,
         )
     except Exception as exc:
         logger.warning("notify_creator_changes_requested email failed: %s", exc)
@@ -192,8 +190,6 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
                     space.creator_email,
                     tmpl["subject"],
                     tmpl["body"],
-                    from_email=Config.CHAT_NOTIFICATION_FROM_EMAIL,
-                    from_name=Config.CHAT_NOTIFICATION_FROM_NAME,
                 )
             except Exception as exc:
                 logger.warning("chat new-message email failed: %s", exc)
