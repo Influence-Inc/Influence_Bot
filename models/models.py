@@ -39,6 +39,21 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_milestone_alerts_video_id()
     _migrate_chat_spaces_public_slug()
+    _migrate_chat_spaces_creator_invited_at()
+
+
+def _migrate_chat_spaces_creator_invited_at():
+    """Add `creator_invited_at` to `chat_spaces` on pre-column deploys."""
+    inspector = inspect(engine)
+    if "chat_spaces" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("chat_spaces")}
+    if "creator_invited_at" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE chat_spaces ADD COLUMN creator_invited_at TIMESTAMP"
+        ))
 
 
 def _migrate_chat_spaces_public_slug():
@@ -389,6 +404,11 @@ class ChatSpace(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_message_at = Column(DateTime, nullable=True)
     archived_at = Column(DateTime, nullable=True)
+    # First time we emailed the creator their magic-link invite for this
+    # chat space. Subsequent Request-Changes clicks on the same review's
+    # Slack button are no-ops for email; new-message emails are still sent
+    # by notify_new_message when the brand actually replies.
+    creator_invited_at = Column(DateTime, nullable=True)
 
     # Track the brand Slack message that hosts the "Open Chat Space" button,
     # so we can chat_update it / post follow-ups in the same channel.
