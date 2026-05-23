@@ -27,7 +27,7 @@ from models.models import (
     SessionLocal,
     SlackInstallation,
 )
-from services.email_service import EmailService
+from services.email_service import EmailService, EmailSendResult
 from templates.email_templates import chat_invite, chat_new_message
 from templates.slack_blocks import (
     build_chat_new_message_blocks,
@@ -79,29 +79,35 @@ def _load_space(chat_space_id: int) -> Optional[ChatSpace]:
         db.close()
 
 
-def notify_creator_changes_requested(*, chat_space_id: int, actor_name: str = "") -> bool:
+def notify_creator_changes_requested(
+    *, chat_space_id: int, actor_name: str = ""
+) -> EmailSendResult:
     """
-    Fired on every Request-Changes click, but the chat-invite email is
-    only sent the FIRST time a given chat space is opened — subsequent
-    clicks on the same review's button are no-ops here (the brand still
-    gets jumped into the chat by the button's URL; chat replies still
-    fan out to the creator via notify_new_message). Returns True only on
-    the call that actually sent an email.
+    Fired on every Request-Changes click. The chat-invite email is only
+    sent the FIRST time a given chat space is opened — subsequent clicks
+    on the same review's button are no-ops here (the brand still gets
+    jumped into the chat by the button's URL; chat replies still fan out
+    to the creator via notify_new_message).
+
+    Returns:
+      - SENT          – an email was sent on this call
+      - ALREADY_SENT  – the creator was already invited; nothing to do
+      - FAILED        – we tried to send and the provider rejected it
     """
     space = _load_space(chat_space_id)
     if space is None or not space.creator_email:
-        return False
+        return EmailSendResult.FAILED
 
     if space.creator_invited_at is not None:
         logger.info(
             "Skipping duplicate chat-invite email for chat_space %s (creator already invited at %s)",
             space.id, space.creator_invited_at,
         )
-        return False
+        return EmailSendResult.ALREADY_SENT
 
     creator_url = _chat_url(space.id, party="creator", identifier=space.creator_email)
     if not creator_url:
-        return False
+        return EmailSendResult.FAILED
 
     try:
         tmpl = chat_invite(
@@ -117,11 +123,13 @@ def notify_creator_changes_requested(*, chat_space_id: int, actor_name: str = ""
         )
     except Exception as exc:
         logger.warning("notify_creator_changes_requested email failed: %s", exc)
-        return False
+        return EmailSendResult.FAILED
 
-    if sent:
-        _mark_creator_invited(chat_space_id)
-    return sent
+    if not sent:
+        return EmailSendResult.FAILED
+
+    _mark_creator_invited(chat_space_id)
+    return EmailSendResult.SENT
 
 
 def _mark_creator_invited(chat_space_id: int) -> None:

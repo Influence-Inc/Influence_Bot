@@ -13,6 +13,7 @@ from models.models import (
     ReviewSubmission,
     SessionLocal,
 )
+from services.email_service import EmailSendResult
 from services import chat_service
 from services.chat_notifications import notify_creator_changes_requested
 from services.review_approval import approve_review_core
@@ -303,29 +304,36 @@ def register_actions(app):
                 "Failed to ensure chat space for review %s: %s", review_id, exc
             )
 
-        # Email the creator (fresh email every click). Pulled into the
-        # chat-notifications module so the From address override + chat
-        # URL building stay in one place.
-        email_sent = False
+        # Email the creator on the first click only; subsequent Request-
+        # Changes clicks on the same review return ALREADY_SENT (the
+        # chat-notifications module handles the "first time" check via
+        # chat_space.creator_invited_at).
+        email_result = EmailSendResult.FAILED
         if chat_space_id and creator_email:
             try:
-                email_sent = notify_creator_changes_requested(
+                email_result = notify_creator_changes_requested(
                     chat_space_id=chat_space_id,
                     actor_name=actor_name,
                 )
             except Exception as exc:
                 logger.warning("notify_creator_changes_requested failed: %s", exc)
+                email_result = EmailSendResult.FAILED
 
-        # Append a footer to the original Slack message; do NOT strip the
-        # action buttons — they stay until Approve.
-        if channel_id and ts:
+        # Decide on the Slack footer. On ALREADY_SENT we skip the footer
+        # entirely: the brand was just redirected into the chat via the
+        # button URL, no new event happened, and an extra footer per click
+        # clutters the message.
+        email_note = None
+        if not creator_email:
+            email_note = "no creator email on file"
+        elif email_result == EmailSendResult.SENT:
+            email_note = "creator emailed"
+        elif email_result == EmailSendResult.FAILED:
+            email_note = "email failed — check logs"
+
+        if email_note and channel_id and ts:
             updated_blocks = list(original_blocks)
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            email_note = (
-                "creator emailed" if email_sent
-                else ("no creator email on file" if not creator_email
-                      else "email failed — check logs")
-            )
             updated_blocks.append(
                 {
                     "type": "context",
@@ -355,5 +363,5 @@ def register_actions(app):
         logger.info(
             f"review_request_changes: review_id={review_id} "
             f"creator=@{creator_username} actor=@{actor_name} "
-            f"first_time={first_time} email_sent={email_sent}"
+            f"first_time={first_time} email_result={email_result.value}"
         )
