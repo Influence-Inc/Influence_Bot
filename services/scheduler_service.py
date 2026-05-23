@@ -28,6 +28,7 @@ from models.models import (
 from services.brand_routing import post_to_brand_workspace
 from services.reelstats_api import ReelStatsAPI
 from services.email_service import EmailService, EmailSendResult
+from services.review_approval import run_auto_approval_sweep
 from templates.slack_blocks import (
     _format_upload_date,
     build_milestone_blocks,
@@ -81,10 +82,23 @@ class SchedulerService:
             replace_existing=True,
         )
 
+        # 24h auto-approval sweep — runs every 30 min so the worst-case
+        # auto-approve latency is 24h + 30m. Reviews are auto-approved
+        # if (a) no button was clicked within 24h of submission, or
+        # (b) Request Changes was clicked but the chat stayed empty for
+        # 24h.
+        self.scheduler.add_job(
+            run_auto_approval_sweep,
+            trigger=IntervalTrigger(minutes=30),
+            id="auto_approval_sweep",
+            name="Auto-approve reviews stale for 24h",
+            replace_existing=True,
+        )
+
         self.scheduler.start()
         logger.info(
             f"Scheduler started: polling every {poll_seconds}s, "
-            f"daily summary at 9 AM"
+            f"daily summary at 9 AM, auto-approval sweep every 30m"
         )
 
     def shutdown(self):

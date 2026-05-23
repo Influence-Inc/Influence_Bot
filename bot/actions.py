@@ -6,61 +6,18 @@ Handles button clicks on notification messages.
 import logging
 from datetime import datetime, timezone
 
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
 from sqlalchemy.exc import IntegrityError
 
-from config import Config
 from models.models import (
     PaymentRecord,
     ReviewSubmission,
     SessionLocal,
 )
-from services.email_service import EmailService
 from services import chat_service
 from services.chat_notifications import notify_creator_changes_requested
-from templates.email_templates import video_approved
-from templates.slack_blocks import build_review_approved_blocks
+from services.review_approval import approve_review_core
 
 logger = logging.getLogger(__name__)
-
-_email_service = EmailService()
-
-
-def _post_admin_approval_notification(
-    *,
-    creator_username: str,
-    campaign_name: str,
-    brand_name: str,
-    video_link: str,
-    actor_name: str,
-) -> None:
-    """
-    Post a new top-level approval notification to the admin
-    #content-reviews channel. Uses the home-workspace SLACK_BOT_TOKEN so it
-    always lands in the admin Slack regardless of which workspace the
-    button click came from. Best-effort — failures are logged, not raised.
-    """
-    if not Config.SLACK_BOT_TOKEN or not Config.SLACK_CHANNEL_REVIEWS:
-        return
-    try:
-        blocks = build_review_approved_blocks(
-            creator_username=creator_username,
-            campaign_name=campaign_name,
-            brand_name=brand_name,
-            video_link=video_link,
-            actor_name=actor_name,
-        )
-        WebClient(token=Config.SLACK_BOT_TOKEN).chat_postMessage(
-            channel=Config.SLACK_CHANNEL_REVIEWS,
-            text=f"Review approved for @{creator_username}",
-            blocks=blocks,
-        )
-    except SlackApiError as e:
-        err = e.response.get("error") if e.response else str(e)
-        logger.warning("Admin approval notification failed: %s", err)
-    except Exception as e:
-        logger.warning("Admin approval notification failed: %s", e)
 
 
 def _strip_review_action_buttons(blocks: list[dict], review_id: int) -> list[dict]:
@@ -213,67 +170,32 @@ def register_actions(app):
                     response_type="ephemeral",
                 )
                 return
-
             if row.decision == "approved":
                 respond(
-                    text=(
-                        ":information_source: This review is already approved."
-                    ),
+                    text=":information_source: This review is already approved.",
                     response_type="ephemeral",
                 )
                 return
-            # Approve overrides a prior "changes_requested" decision — both
-            # buttons stay visible until Approve is clicked, so the brand
-            # can move on from a chat-driven revision cycle to approval
-            # without re-clicking anything.
-            row.decision = "approved"
-            row.decided_by_id = actor_id
-            row.decided_by_name = actor_name
-            row.decided_at = datetime.now(timezone.utc)
-            db.commit()
-
-            creator_email = row.creator_email
             creator_username = row.creator_username
-            brand_name = row.brand_name or ""
-            campaign_name = row.campaign_name or ""
-            video_link = row.video_link or ""
         finally:
             db.close()
 
-        email_sent = False
-        if creator_email:
-            template = video_approved(
-                creator_name=creator_username, brand_name=brand_name
-            )
-            email_sent = _email_service.send_email(
-                creator_email,
-                template["subject"],
-                template["body"],
-            )
+        # Shared approval flow: DB write, creator email, close chat space,
+        # admin #content-reviews notification. Same code path the 24h
+        # auto-approval sweep uses, so any change to side effects lands
+        # in both places.
+        approve_review_core(
+            review_id=review_id,
+            actor_id=actor_id,
+            actor_name=actor_name,
+        )
 
-        # Close the chat space attached to this review: revokes the
-        # brand/creator sessions and flips the space to "approved" so the
-        # admin dashboard keeps full visibility while the campaign is
-        # still running. The space is only fully archived when the
-        # campaign ends.
-        try:
-            space = chat_service.find_by_review_id(review_id)
-            if space is not None and space.status == "active":
-                chat_service.close_for_approval(space.id)
-        except Exception as exc:
-            logger.warning(
-                "Could not close chat space for review %s on approval: %s",
-                review_id, exc,
-            )
-
-        # Update Slack message: drop the buttons, add an approval footer.
+        # Update the message the brand clicked: drop the buttons + add a
+        # footer. Done here (not in approve_review_core) because it needs
+        # the click's channel/ts; the auto-approval path has no such
+        # message to update.
         updated_blocks = _strip_review_action_buttons(original_blocks, review_id)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        email_note = (
-            "creator emailed" if email_sent
-            else ("no creator email on file" if not creator_email
-                  else "email failed — check logs")
-        )
         updated_blocks.append(
             {
                 "type": "context",
@@ -282,7 +204,7 @@ def register_actions(app):
                         "type": "mrkdwn",
                         "text": (
                             f":white_check_mark: *Approved* by <@{actor_id}> — "
-                            f"@{creator_username} ({timestamp}) · {email_note}"
+                            f"@{creator_username} ({timestamp})"
                         ),
                     }
                 ],
@@ -299,25 +221,6 @@ def register_actions(app):
                 )
             except Exception as e:
                 logger.error(f"Failed to update message after review_approve: {e}")
-
-        # Post a fresh approval notification to the admin #content-reviews
-        # channel. The click itself can land on the admin or the brand
-        # workspace (both render the same buttons) — this guarantees the
-        # admin team always sees the approval as a distinct event, even
-        # when the brand approves from their own workspace.
-        _post_admin_approval_notification(
-            creator_username=creator_username,
-            campaign_name=campaign_name,
-            brand_name=brand_name,
-            video_link=video_link,
-            actor_name=actor_name,
-        )
-
-        logger.info(
-            f"review_approve: review_id={review_id} "
-            f"creator=@{creator_username} actor=@{actor_name} "
-            f"email_sent={email_sent}"
-        )
 
     # ------------------------------------------------------------------
     # Review: Request Changes
