@@ -40,6 +40,21 @@ def init_db():
     _migrate_milestone_alerts_video_id()
     _migrate_chat_spaces_public_slug()
     _migrate_chat_spaces_creator_invited_at()
+    _migrate_review_submissions_submit_posts_url()
+
+
+def _migrate_review_submissions_submit_posts_url():
+    """Add `submit_posts_url` to `review_submissions` on pre-column deploys."""
+    inspector = inspect(engine)
+    if "review_submissions" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("review_submissions")}
+    if "submit_posts_url" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE review_submissions ADD COLUMN submit_posts_url TEXT"
+        ))
 
 
 def _migrate_chat_spaces_creator_invited_at():
@@ -274,6 +289,12 @@ class ReviewSubmission(Base):
     creator_email = Column(String(255), nullable=True)
     video_link = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
+    # Per-creator-per-campaign URL the creator uses to submit posted
+    # content URLs back to the brand. Captured at review_submitted time
+    # so the approval email can include it without re-hitting the
+    # ReelStats API. Sourced from
+    # `creators[].submissionLinks.submitPostsUrl` in the API payload.
+    submit_posts_url = Column(Text, nullable=True)
 
     slack_channel = Column(String(255), nullable=True)
     slack_ts = Column(String(255), nullable=True)

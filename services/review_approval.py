@@ -79,12 +79,15 @@ def approve_review_core(
         brand_name = row.brand_name or ""
         campaign_name = row.campaign_name or ""
         video_link = row.video_link or ""
+        submit_posts_url = row.submit_posts_url or None
     finally:
         db.close()
 
     if creator_email:
         template = video_approved(
-            creator_name=creator_username, brand_name=brand_name
+            creator_name=creator_username,
+            brand_name=brand_name,
+            submit_posts_url=submit_posts_url,
         )
         try:
             _email_service.send_email(

@@ -201,6 +201,8 @@ class WebhookHandler:
             brand_name = campaign.get("brandName") or campaign.get("brand_name") or ""
             video_link = review.get("videoLink") or review.get("video_link") or ""
             notes = review.get("notes", "") or ""
+            submission_links = creator.get("submissionLinks") or {}
+            submit_posts_url = submission_links.get("submitPostsUrl") or None
 
             if not video_link:
                 logger.warning(
@@ -218,6 +220,7 @@ class WebhookHandler:
                     creator_email=creator.get("email"),
                     video_link=video_link,
                     notes=notes,
+                    submit_posts_url=submit_posts_url,
                 )
                 db.add(submission)
                 db.commit()
