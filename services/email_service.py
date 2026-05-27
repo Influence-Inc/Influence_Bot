@@ -33,6 +33,7 @@ class EmailService:
         self.api_key = Config.RESEND_API_KEY
         self.from_address = Config.EMAIL_FROM_ADDRESS
         self.from_name = Config.EMAIL_FROM_NAME
+        self.reply_to = Config.EMAIL_REPLY_TO
 
     def send_email(
         self,
@@ -42,6 +43,7 @@ class EmailService:
         cc: str = None,
         from_email: str = None,
         from_name: str = None,
+        reply_to: str = None,
     ) -> bool:
         """
         Send an email via the Resend API.
@@ -50,6 +52,10 @@ class EmailService:
         (jennifer@useinfluence.xyz). `from_email` / `from_name` can override
         for a single send, but the override domain must also be verified on
         Resend or the API will reject the send.
+
+        Reply-To defaults to Config.EMAIL_REPLY_TO (which itself defaults to
+        the From address) so creator replies land in jennifer@useinfluence.xyz
+        instead of Resend's Return-Path. Pass `reply_to` to override per send.
         """
         if not self.api_key:
             logger.error(
@@ -61,6 +67,7 @@ class EmailService:
 
         effective_from_email = from_email or self.from_address
         effective_from_name = from_name or self.from_name
+        effective_reply_to = reply_to or self.reply_to
 
         payload = {
             "from": f"{effective_from_name} <{effective_from_email}>",
@@ -70,6 +77,8 @@ class EmailService:
         }
         if cc:
             payload["cc"] = [cc]
+        if effective_reply_to:
+            payload["reply_to"] = effective_reply_to
 
         try:
             response = requests.post(
