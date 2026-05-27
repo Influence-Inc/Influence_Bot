@@ -66,6 +66,13 @@ class Config:
     RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
     EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "jennifer@useinfluence.xyz")
     EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Jennifer - INFLUENCE")
+    # Reply-To header so creator replies land in a real inbox instead of
+    # bouncing back through Resend's MAIL FROM. Defaults to the From
+    # address; override with EMAIL_REPLY_TO env var if you want replies
+    # routed somewhere else (e.g. a shared team inbox).
+    EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO") or os.environ.get(
+        "EMAIL_FROM_ADDRESS", "jennifer@useinfluence.xyz"
+    )
 
     # --- Application ---
     # Host/port binding is handled by gunicorn ($PORT on Railway), not here.
