@@ -20,12 +20,12 @@ CHAT_PAGE = """\
   <style>
     :root { color-scheme: light; }
     html, body { background:#f4f5f7; color:#1d1d1f; height:100%; margin:0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display:flex; flex-direction:column; }
-    header.bar { background:#fff; border-bottom:1px solid #e5e5ea; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display:flex; flex-direction:column; min-height:100dvh; }
+    header.bar { background:#fff; border-bottom:1px solid #e5e5ea; position:sticky; top:0; z-index:2; }
     header.bar .bar-inner { max-width:780px; margin:0 auto; padding:14px 16px; box-sizing:border-box; }
     header.bar h1 { font-size:16px; margin:0; }
     header.bar .meta { font-size:13px; color:#6b7280; margin-top:2px; }
-    main { flex:1; overflow-y:auto; padding:16px; max-width:780px; width:100%; margin:0 auto; box-sizing:border-box; }
+    main { flex:1; overflow-y:auto; padding:16px; max-width:780px; width:100%; margin:0 auto; box-sizing:border-box; -webkit-overflow-scrolling:touch; }
     .msg { display:flex; margin:8px 0; }
     .msg.me { justify-content:flex-end; }
     .bubble { max-width:70%; padding:10px 14px; border-radius:14px; background:#fff; border:1px solid #e5e5ea; word-wrap:break-word; }
@@ -33,17 +33,17 @@ CHAT_PAGE = """\
     .msg .who { font-size:11px; color:#6b7280; margin-bottom:2px; }
     .msg .body { white-space:pre-wrap; font-size:14px; line-height:1.45; }
     .msg .ts { font-size:11px; color:#9ca3af; margin-top:4px; }
-    .msg .attachments img { max-width:220px; max-height:220px; border-radius:8px; margin-top:6px; display:block; }
+    .msg .attachments img { max-width:min(220px, 70vw); max-height:220px; border-radius:8px; margin-top:6px; display:block; }
     .reactions { margin-top:4px; display:flex; gap:4px; flex-wrap:wrap; }
     .reactions .react { background:#f3f4f6; border:1px solid #e5e7eb; border-radius:12px; padding:2px 8px; font-size:12px; cursor:pointer; }
     .reactions .add { background:transparent; border:1px dashed #d1d5db; color:#6b7280; }
-    footer.compose { background:#fff; border-top:1px solid #e5e5ea; padding:10px; }
+    footer.compose { background:#fff; border-top:1px solid #e5e5ea; padding:10px; padding-bottom:max(10px, env(safe-area-inset-bottom)); position:sticky; bottom:0; z-index:2; }
     .compose-inner { max-width:780px; margin:0 auto; display:flex; gap:8px; align-items:center; }
-    .compose textarea { flex:1; resize:none; padding:10px 12px; border-radius:10px; border:1px solid #d1d5db; font-family:inherit; font-size:14px; min-height:38px; max-height:120px; }
-    .compose button { background:#111827; color:#fff; border:0; padding:10px 16px; border-radius:10px; cursor:pointer; font-size:14px; }
+    .compose textarea { flex:1; resize:none; padding:10px 12px; border-radius:10px; border:1px solid #d1d5db; font-family:inherit; font-size:16px; min-height:40px; max-height:120px; }
+    .compose button { background:#111827; color:#fff; border:0; padding:10px 16px; border-radius:10px; cursor:pointer; font-size:14px; min-height:40px; }
     .compose button:disabled { opacity:.5; cursor:not-allowed; }
-    .compose .iconbtn { background:#f3f4f6; color:#111827; padding:8px 10px; }
-    .emoji-pop { position:absolute; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:6px; box-shadow:0 6px 24px rgba(0,0,0,.08); display:none; }
+    .compose .iconbtn { background:#f3f4f6; color:#111827; padding:8px 10px; min-width:40px; }
+    .emoji-pop { position:absolute; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:6px; box-shadow:0 6px 24px rgba(0,0,0,.08); display:none; z-index:3; max-width:calc(100vw - 24px); flex-wrap:wrap; }
     .emoji-pop button { background:transparent; border:0; font-size:18px; cursor:pointer; padding:4px; }
     .archived { background:#fef2f2; color:#991b1b; padding:10px 20px; font-size:13px; }
     .approved-banner { background:#ecfdf5; color:#065f46; padding:10px 20px; font-size:13px; }
@@ -56,6 +56,21 @@ CHAT_PAGE = """\
     .typing-bar .dot:nth-child(2) { animation-delay:.15s; }
     .typing-bar .dot:nth-child(3) { animation-delay:.3s; }
     @keyframes typing { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
+    @media (max-width: 640px) {
+      header.bar .bar-inner { padding:10px 12px; }
+      header.bar h1 { font-size:15px; }
+      header.bar .meta { font-size:12px; }
+      main { padding:10px 12px; }
+      .bubble { max-width:85%; padding:9px 12px; }
+      .msg { margin:6px 0; }
+      footer.compose { padding:8px; padding-bottom:max(8px, env(safe-area-inset-bottom)); }
+      .compose-inner { gap:6px; }
+      .compose textarea { padding:9px 11px; }
+      .compose button { padding:10px 12px; font-size:14px; }
+      .compose .iconbtn { padding:8px; }
+      .typing-bar { padding:4px 12px; }
+      .archived, .approved-banner { padding:10px 12px; font-size:12px; }
+    }
   </style>
 </head>
 <body data-space-slug="{{ space.public_slug or space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status != 'active' else 'false' }}">
@@ -377,13 +392,17 @@ CHAT_PAGE = """\
 
 ADMIN_LOGIN_PAGE = """\
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Admin login — INFLUENCE</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Admin login — INFLUENCE</title>
 <style>
-body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; max-width:380px; margin:14vh auto; padding:24px; background:#f4f5f7; }
+body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; max-width:380px; margin:14vh auto; padding:24px; background:#f4f5f7; box-sizing:border-box; }
 .card { background:#fff; padding:24px; border-radius:12px; border:1px solid #e5e5ea; }
-input { width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; box-sizing:border-box; }
-button { width:100%; padding:10px; background:#111827; color:#fff; border:0; border-radius:8px; margin-top:10px; cursor:pointer; }
+input { width:100%; padding:10px; border:1px solid #d1d5db; border-radius:8px; font-size:16px; box-sizing:border-box; }
+button { width:100%; padding:12px; background:#111827; color:#fff; border:0; border-radius:8px; margin-top:10px; cursor:pointer; font-size:14px; }
 .err { color:#991b1b; font-size:13px; margin-top:8px; }
+@media (max-width: 480px) {
+  body { margin:6vh auto; padding:16px; max-width:100%; }
+  .card { padding:18px; }
+}
 </style></head><body><div class="card">
 <h2 style="margin:0 0 12px">INFLUENCE Chat Admin</h2>
 <form method="POST" action="/admin/chats/login">
@@ -396,12 +415,12 @@ button { width:100%; padding:10px; background:#111827; color:#fff; border:0; bor
 
 ADMIN_DASHBOARD = """\
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Chat spaces — INFLUENCE Admin</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Chat spaces — INFLUENCE Admin</title>
 <style>
 body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5f7; margin:0; }
-.container { max-width:1100px; margin:0 auto; padding:24px; }
+.container { max-width:1100px; margin:0 auto; padding:24px; box-sizing:border-box; }
 h1 { font-size:20px; margin:0 0 16px; }
-.stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+.stats { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:16px; }
 .stat { background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; }
 .stat .v { font-size:22px; font-weight:600; }
 .stat .l { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.05em; }
@@ -410,20 +429,36 @@ h1 { font-size:20px; margin:0 0 16px; }
 .panel ol { margin:0; padding-left:18px; font-size:13px; color:#1f2937; }
 .panel li + li { margin-top:4px; }
 form.search { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-form.search input, form.search select { padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; font-size:13px; }
+form.search input, form.search select { padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; box-sizing:border-box; }
 form.search input[type=text] { min-width:240px; flex:1; }
+form.search button { padding:8px 14px; border-radius:8px; border:1px solid #111827; background:#111827; color:#fff; font-size:13px; cursor:pointer; }
 .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
-.chips a { font-size:12px; padding:4px 10px; border-radius:14px; background:#fff; border:1px solid #d1d5db; color:#1f2937; text-decoration:none; }
+.chips a { font-size:12px; padding:6px 12px; border-radius:14px; background:#fff; border:1px solid #d1d5db; color:#1f2937; text-decoration:none; }
 .chips a.on { background:#111827; color:#fff; border-color:#111827; }
-table { width:100%; background:#fff; border:1px solid #e5e5ea; border-radius:10px; border-collapse:separate; border-spacing:0; overflow:hidden; }
+.table-wrap { background:#fff; border:1px solid #e5e5ea; border-radius:10px; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+table { width:100%; min-width:640px; background:#fff; border-collapse:separate; border-spacing:0; }
 th, td { text-align:left; padding:10px 12px; font-size:13px; border-bottom:1px solid #f1f1f3; }
-th { background:#f9fafb; font-weight:500; color:#6b7280; }
+th { background:#f9fafb; font-weight:500; color:#6b7280; white-space:nowrap; }
 tr:last-child td { border-bottom:0; }
-a.row { color:#1d4ed8; text-decoration:none; }
+a.row { color:#1d4ed8; text-decoration:none; white-space:nowrap; }
 .tag { display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; }
 .tag.active { background:#dcfce7; color:#166534; }
 .tag.archived { background:#fee2e2; color:#991b1b; }
 .tag.approved { background:#dbeafe; color:#1e3a8a; }
+@media (max-width: 900px) {
+  .stats { grid-template-columns:repeat(3,1fr); }
+}
+@media (max-width: 640px) {
+  .container { padding:14px; }
+  h1 { font-size:18px; margin-bottom:12px; }
+  .stats { grid-template-columns:repeat(2,1fr); gap:8px; }
+  .stat { padding:10px 12px; }
+  .stat .v { font-size:18px; }
+  .stat .l { font-size:11px; }
+  .panel { padding:12px; }
+  form.search input[type=text] { min-width:0; width:100%; }
+  th, td { padding:8px 10px; font-size:12px; }
+}
 </style></head><body>
 <div class="container">
 <h1>Chat spaces</h1>
@@ -458,6 +493,7 @@ a.row { color:#1d4ed8; text-decoration:none; }
   <a href="/admin/chats?status=approved" class="{% if query.status == 'approved' %}on{% endif %}">Approved</a>
   <a href="/admin/chats?status=archived" class="{% if query.status == 'archived' %}on{% endif %}">Archived</a>
 </div>
+<div class="table-wrap">
 <table>
 <thead><tr><th>Creator</th><th>Campaign</th><th>Brand</th><th>Status</th><th>Last message</th><th></th></tr></thead>
 <tbody>
@@ -474,22 +510,23 @@ a.row { color:#1d4ed8; text-decoration:none; }
 {% if not spaces %}<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:24px">No chat spaces.</td></tr>{% endif %}
 </tbody>
 </table>
+</div>
 </div></body></html>
 """
 
 
 ADMIN_CHAT_PAGE = """\
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>{{ space.campaign_name or 'Chat' }} — Admin</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ space.campaign_name or 'Chat' }} — Admin</title>
 <style>
 body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5f7; margin:0; }
-.container { max-width:820px; margin:0 auto; padding:24px; }
+.container { max-width:820px; margin:0 auto; padding:24px; box-sizing:border-box; }
 .crumbs { font-size:13px; color:#6b7280; margin-bottom:8px; }
 .crumbs a { color:#1d4ed8; text-decoration:none; }
-h1 { font-size:18px; margin:0 0 4px; }
-.meta { font-size:13px; color:#6b7280; margin-bottom:12px; }
+h1 { font-size:18px; margin:0 0 4px; word-wrap:break-word; }
+.meta { font-size:13px; color:#6b7280; margin-bottom:12px; word-wrap:break-word; }
 .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px; }
-.toolbar a, .toolbar button { font-size:13px; padding:7px 12px; border-radius:8px; text-decoration:none; border:1px solid #d1d5db; background:#fff; color:#1f2937; cursor:pointer; }
+.toolbar a, .toolbar button { font-size:13px; padding:8px 12px; border-radius:8px; text-decoration:none; border:1px solid #d1d5db; background:#fff; color:#1f2937; cursor:pointer; min-height:36px; box-sizing:border-box; }
 .toolbar form { display:inline; margin:0; }
 .toolbar .danger { color:#991b1b; border-color:#fecaca; background:#fff1f2; }
 .toolbar .primary { color:#fff; background:#111827; border-color:#111827; }
@@ -499,13 +536,22 @@ h1 { font-size:18px; margin:0 0 4px; }
 .msg .who { font-size:11px; color:#6b7280; margin-bottom:2px; }
 .msg .body { white-space:pre-wrap; font-size:14px; word-break:break-word; }
 .msg .ts { font-size:11px; color:#9ca3af; margin-top:4px; }
-.msg img { max-width:240px; border-radius:8px; margin-top:6px; display:block; }
+.msg img { max-width:min(240px, 80%); border-radius:8px; margin-top:6px; display:block; }
 .reactions { margin-top:6px; font-size:12px; color:#6b7280; }
 .compose { background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:10px; margin-top:14px; }
-.compose textarea { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #d1d5db; font-family:inherit; font-size:14px; min-height:60px; box-sizing:border-box; resize:vertical; }
-.compose .row { display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px; }
-.compose .row .hint { font-size:11px; color:#6b7280; }
-.compose button { background:#111827; color:#fff; border:0; padding:8px 14px; border-radius:8px; cursor:pointer; font-size:13px; }
+.compose textarea { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #d1d5db; font-family:inherit; font-size:16px; min-height:60px; box-sizing:border-box; resize:vertical; }
+.compose .row { display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px; flex-wrap:wrap; }
+.compose .row .hint { font-size:11px; color:#6b7280; flex:1 1 60%; min-width:0; }
+.compose button { background:#111827; color:#fff; border:0; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:14px; min-height:40px; }
+@media (max-width: 640px) {
+  .container { padding:14px; }
+  h1 { font-size:17px; }
+  .meta { font-size:12px; }
+  .toolbar a, .toolbar button { font-size:12px; padding:8px 10px; }
+  .msg { padding:9px 12px; }
+  .msg .body { font-size:13px; }
+  .compose .row .hint { flex-basis:100%; }
+}
 </style></head><body>
 <div class="container">
 <div class="crumbs"><a href="/admin/chats">← All chat spaces</a></div>
@@ -559,11 +605,15 @@ h1 { font-size:18px; margin:0 0 4px; }
 
 ERROR_PAGE = """\
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>{{ heading }} — INFLUENCE</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ heading }} — INFLUENCE</title>
 <style>
 body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; max-width:520px; margin:14vh auto; padding:0 24px; color:#1d1d1f; }
 h1 { font-size:22px; margin-bottom:8px; }
 p { color:#4b5563; line-height:1.5; }
+@media (max-width: 480px) {
+  body { margin:8vh auto; padding:0 18px; }
+  h1 { font-size:20px; }
+}
 </style></head><body>
 <h1>{{ heading }}</h1>
 <p>{{ message }}</p>
