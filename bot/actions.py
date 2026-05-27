@@ -319,19 +319,19 @@ def register_actions(app):
                 logger.warning("notify_creator_changes_requested failed: %s", exc)
                 email_result = EmailSendResult.FAILED
 
-        # Decide on the Slack footer. On ALREADY_SENT we skip the footer
-        # entirely: the brand was just redirected into the chat via the
-        # button URL, no new event happened, and an extra footer per click
-        # clutters the message.
-        email_note = None
+        # On ALREADY_SENT (duplicate Request-Changes click) we skip the
+        # footer entirely — the brand was just redirected into the chat
+        # via the button URL, no new event happened, and an extra footer
+        # per click clutters the message. On the first click we render a
+        # short "Chat opened" line without exposing internal email-send
+        # status in the brand's view.
+        render_footer = False
         if not creator_email:
-            email_note = "no creator email on file"
-        elif email_result == EmailSendResult.SENT:
-            email_note = "creator emailed"
-        elif email_result == EmailSendResult.FAILED:
-            email_note = "email failed — check logs"
+            render_footer = True
+        elif email_result in (EmailSendResult.SENT, EmailSendResult.FAILED):
+            render_footer = True
 
-        if email_note and channel_id and ts:
+        if render_footer and channel_id and ts:
             updated_blocks = list(original_blocks)
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             updated_blocks.append(
@@ -342,7 +342,7 @@ def register_actions(app):
                             "type": "mrkdwn",
                             "text": (
                                 f":pencil2: *Chat opened* by <@{actor_id}> — "
-                                f"@{creator_username} ({timestamp}) · {email_note}"
+                                f"@{creator_username} ({timestamp})"
                             ),
                         }
                     ],
