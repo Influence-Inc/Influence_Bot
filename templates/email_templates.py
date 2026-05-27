@@ -17,15 +17,16 @@ def deadline_reminder_email(
         subject = f"Urgent: {brand_name} Content — Deadline Passed"
         body = f"""Hi {creator_name},
 
-I hope you're doing well. I wanted to reach out regarding the {brand_name} campaign ("{campaign_name}") — the content deadline ({deadline}) has passed.
+Hope you're doing well. The deadline for the {brand_name} campaign ("{campaign_name}") was {deadline} and has now passed.
 
-This is becoming quite time-sensitive, and the brand has been checking in with us for updates. We really want to make sure everything goes smoothly for both you and the brand.
+This is now quite time-sensitive, and we really want to make sure everything goes smoothly for both you and the brand.
 
 Could you please reply to this email today with a status update? Even a quick note letting us know when we can expect the post would be really helpful.
 
-Thank you so much — we truly appreciate your collaboration!
+Thank you so much - we truly appreciate your collaboration!
 
 Best regards,
+
 Jennifer
 INFLUENCE Team
 """
@@ -33,13 +34,14 @@ INFLUENCE Team
         subject = f"Reminder: {brand_name} Content Due Tomorrow"
         body = f"""Hi {creator_name},
 
-Just a quick heads-up — the deadline for your {brand_name} campaign ("{campaign_name}") content is tomorrow ({deadline}).
+Just a quick heads-up, the deadline for your {brand_name} campaign ("{campaign_name}") is tomorrow ({deadline}).
 
 Please make sure your content is posted on time. If there's anything holding things up or if you need any support from our end, let us know and we're happy to help!
 
 Looking forward to seeing the content go live.
 
 Best,
+
 Jennifer
 INFLUENCE Team
 """
@@ -47,33 +49,52 @@ INFLUENCE Team
         subject = f"Upcoming Deadline: {brand_name} Content Due in {days_left} Days"
         body = f"""Hi {creator_name},
 
-Hope you're doing great! Just a friendly reminder that the deadline for your {brand_name} campaign ("{campaign_name}") content is coming up on {deadline} — that's {days_left} days from now.
+Just a friendly reminder that the deadline for your {brand_name} campaign ("{campaign_name}") is coming up on {deadline} - that's {days_left} days from now.
 
 If you haven't already, please make sure everything is on track for posting by the deadline. If you have any questions about the brief or deliverables, don't hesitate to reach out.
 
 Thanks for being such a great partner on this!
 
 Warm regards,
+
 Jennifer
 INFLUENCE Team
 """
     return {"subject": subject, "body": body}
 
 
-def video_approved(creator_name: str, brand_name: str) -> dict:
-    """Email to creator when their video has been approved by the brand."""
+def video_approved(
+    creator_name: str,
+    brand_name: str,
+    submit_posts_url: str | None = None,
+) -> dict:
+    """
+    Email to creator when their video has been approved by the brand.
+
+    `submit_posts_url` is the creator-specific URL from the ReelStats
+    API (`creators[].submissionLinks.submitPostsUrl`). When present we
+    include the "submit the post link(s) here" sentence; when missing
+    (older review rows / API didn't return it) we drop that sentence
+    entirely so the email doesn't ship a broken link.
+    """
     subject = f"Great News! Your {brand_name} Video Has Been Approved"
+    if submit_posts_url:
+        submit_line = (
+            "Once it's live, please submit the post link(s) here so we can "
+            f"track the performance: {submit_posts_url}\n\n"
+        )
+    else:
+        submit_line = ""
     body = f"""Hi {creator_name},
 
-Amazing news — the {brand_name} team has reviewed and approved your video! Everything looks fantastic, and they're really happy with the content.
+The {brand_name} team has reviewed and approved your video!
 
-You're all set to go ahead and post it according to the campaign guidelines. Just a quick reminder to make sure all the required tags, hashtags, and mentions are included as discussed.
+You're all set to go ahead and post it. Just a quick reminder to make sure all the required tags, hashtags, and mentions are included as per the posting guidelines in the content brief.
 
-Once it's live, please share the post link with us so we can track the performance.
-
-Thanks for the awesome work — you absolutely nailed it!
+{submit_line}Thanks for the awesome work! :)
 
 Cheers,
+
 Jennifer
 INFLUENCE Team
 """
