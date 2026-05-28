@@ -400,7 +400,9 @@ class SchedulerService:
                 text=text,
                 blocks=blocks,
             )
-            post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
+            # Deadline reminders are admin-only: brands don't need to see our
+            # internal nags to creators. Brand workspace only gets milestone
+            # alerts, review-link drops, and post-uploaded events.
 
             reminder = DeadlineReminder(
                 campaign_id=campaign_id,
@@ -494,7 +496,10 @@ class SchedulerService:
                 text=text,
                 blocks=blocks,
             )
-            post_to_brand_workspace(creator.get("brand_name", ""), text, blocks)
+            # Upload follow-ups are admin-only: this is an internal "creator
+            # is behind schedule" nag, not a brand-facing event. Brands see
+            # post-uploaded notifications via the post_uploaded webhook
+            # handler, not via this scheduler nag.
 
             followup = UploadFollowup(
                 campaign_id=campaign_id,
