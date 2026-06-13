@@ -425,10 +425,11 @@ class ChatSpace(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_message_at = Column(DateTime, nullable=True)
     archived_at = Column(DateTime, nullable=True)
-    # First time we emailed the creator their magic-link invite for this
-    # chat space. Subsequent Request-Changes clicks on the same review's
-    # Slack button are no-ops for email; new-message emails are still sent
-    # by notify_new_message when the brand actually replies.
+    # Retained for backward compatibility with existing rows. Historically
+    # stamped the first time we emailed the creator a magic-link invite when
+    # the chat space was opened; that invite email has since been removed
+    # (the creator is only emailed once the brand posts a message), so
+    # nothing writes this column anymore.
     creator_invited_at = Column(DateTime, nullable=True)
 
     # Track the brand Slack message that hosts the "Open Chat Space" button,

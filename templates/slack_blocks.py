@@ -445,55 +445,6 @@ def build_video_links_submitted_blocks(
     ]
 
 
-def build_chat_space_invite_blocks(
-    *,
-    creator_username: str,
-    campaign_name: str,
-    brand_name: str,
-    chat_url: str,
-) -> list[dict]:
-    """
-    Posted in the brand workspace channel right after a Request-Changes
-    decision: tells the brand a chat space is open and links them into it.
-    """
-    return [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f":speech_balloon: *Chat space opened with @{creator_username}*\n"
-                    f"Campaign: *{campaign_name}*"
-                    + (f"\nBrand: *{brand_name}*" if brand_name else "")
-                ),
-            },
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Open Chat Space"},
-                    "url": chat_url,
-                    "style": "primary",
-                }
-            ],
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": (
-                        "Future revisions on this campaign reuse the same chat — "
-                        "you'll be notified here when there are new messages."
-                    ),
-                }
-            ],
-        },
-    ]
-
-
 def build_chat_new_message_blocks(
     *,
     creator_username: str,

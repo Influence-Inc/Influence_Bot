@@ -127,43 +127,25 @@ INFLUENCE Team
     return {"subject": subject, "body": body}
 
 
-def chat_invite(
-    creator_name: str, brand_name: str, campaign_name: str, chat_url: str
-) -> dict:
-    """Email to a creator with their magic link into a new chat space."""
-    subject = f"{brand_name} wants to chat about your {campaign_name} video"
-    body = f"""Hi {creator_name},
-
-The {brand_name} team has requested changes on your {campaign_name} video and opened a chat space so you can discuss the feedback directly.
-
-Open the chat here (this link will sign you in automatically):
-{chat_url}
-
-Inside the chat you can reply with messages and screenshots. Future review submissions on this campaign will use the same chat — no need to start over.
-
-Talk soon,
-INFLUENCE Team
-"""
-    return {"subject": subject, "body": body}
-
-
 def chat_new_message(
-    creator_name: str, brand_name: str, sender_name: str, preview: str, chat_url: str
+    creator_name: str, brand_name: str, preview: str, chat_url: str
 ) -> dict:
     """Email to a creator when a brand posts a new message in the chat space."""
-    subject = f"New message from {sender_name} on your {brand_name} chat"
+    subject = f"{brand_name} team messaged you — Content Review"
     body = f"""Hi {creator_name},
 
-{sender_name} just sent you a message in your {brand_name} chat:
+{brand_name} Team just sent you a message about the content you submitted for review:
 
----
+--
 {preview}
----
+--
 
 Reply here:
 {chat_url}
 
 Best,
+
+Jennifer
 INFLUENCE Team
 """
     return {"subject": subject, "body": body}

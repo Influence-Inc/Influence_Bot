@@ -13,9 +13,7 @@ from models.models import (
     ReviewSubmission,
     SessionLocal,
 )
-from services.email_service import EmailSendResult
 from services import chat_service
-from services.chat_notifications import notify_creator_changes_requested
 from services.review_approval import approve_review_core
 
 logger = logging.getLogger(__name__)
@@ -281,57 +279,31 @@ def register_actions(app):
             row.decided_at = datetime.now(timezone.utc)
             db.commit()
 
-            creator_email = row.creator_email
             creator_username = row.creator_username
-            brand_name = row.brand_name or ""
-            campaign_name = row.campaign_name or ""
         finally:
             db.close()
 
         # Ensure a chat space exists (idempotent — pre-created at review
         # post time, but this is the safety net if PUBLIC_BASE_URL was
-        # missing then).
-        chat_space_id = None
+        # missing then). Opening the chat space deliberately sends the
+        # creator no notification: they're only emailed once the brand
+        # actually posts a message in the chat (see
+        # services.chat_notifications.notify_new_message).
         try:
             team = body.get("team") or {}
-            space = chat_service.get_or_create_for_review(
+            chat_service.get_or_create_for_review(
                 review_id, workspace_team_id=team.get("id"),
             )
-            if space is not None:
-                chat_space_id = space.id
         except Exception as exc:
             logger.exception(
                 "Failed to ensure chat space for review %s: %s", review_id, exc
             )
 
-        # Email the creator on the first click only; subsequent Request-
-        # Changes clicks on the same review return ALREADY_SENT (the
-        # chat-notifications module handles the "first time" check via
-        # chat_space.creator_invited_at).
-        email_result = EmailSendResult.FAILED
-        if chat_space_id and creator_email:
-            try:
-                email_result = notify_creator_changes_requested(
-                    chat_space_id=chat_space_id,
-                    actor_name=actor_name,
-                )
-            except Exception as exc:
-                logger.warning("notify_creator_changes_requested failed: %s", exc)
-                email_result = EmailSendResult.FAILED
-
-        # On ALREADY_SENT (duplicate Request-Changes click) we skip the
-        # footer entirely — the brand was just redirected into the chat
-        # via the button URL, no new event happened, and an extra footer
-        # per click clutters the message. On the first click we render a
-        # short "Chat opened" line without exposing internal email-send
-        # status in the brand's view.
-        render_footer = False
-        if not creator_email:
-            render_footer = True
-        elif email_result in (EmailSendResult.SENT, EmailSendResult.FAILED):
-            render_footer = True
-
-        if render_footer and channel_id and ts:
+        # Append a short "Chat opened" footer to the brand's Slack message on
+        # the first Request-Changes click only. Subsequent clicks on the same
+        # review just re-open the chat via the button URL, so an extra footer
+        # per click would only clutter the message.
+        if first_time and channel_id and ts:
             updated_blocks = list(original_blocks)
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             updated_blocks.append(
@@ -363,5 +335,5 @@ def register_actions(app):
         logger.info(
             f"review_request_changes: review_id={review_id} "
             f"creator=@{creator_username} actor=@{actor_name} "
-            f"first_time={first_time} email_result={email_result.value}"
+            f"first_time={first_time}"
         )
