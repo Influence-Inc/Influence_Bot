@@ -15,374 +15,576 @@ CHAT_PAGE = """\
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{{ chat_title }} — INFLUENCE</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    :root { color-scheme: light; }
-    html, body { background:#f4f5f7; color:#1d1d1f; height:100%; margin:0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display:flex; flex-direction:column; min-height:100dvh; }
-    header.bar { background:#fff; border-bottom:1px solid #e5e5ea; position:sticky; top:0; z-index:2; }
-    header.bar .bar-inner { max-width:780px; margin:0 auto; padding:14px 16px; box-sizing:border-box; }
-    header.bar h1 { font-size:16px; margin:0; }
-    header.bar .meta { font-size:13px; color:#6b7280; margin-top:2px; }
-    main { flex:1; overflow-y:auto; padding:16px; max-width:780px; width:100%; margin:0 auto; box-sizing:border-box; -webkit-overflow-scrolling:touch; }
-    .msg { display:flex; margin:8px 0; }
-    .msg.me { justify-content:flex-end; }
-    .bubble { max-width:70%; padding:10px 14px; border-radius:14px; background:#fff; border:1px solid #e5e5ea; word-wrap:break-word; }
-    .msg.me .bubble { background:#dbeafe; border-color:#bfdbfe; }
-    .msg .who { font-size:11px; color:#6b7280; margin-bottom:2px; }
-    .msg .body { white-space:pre-wrap; font-size:14px; line-height:1.45; }
-    .msg .ts { font-size:11px; color:#9ca3af; margin-top:4px; }
-    .msg .attachments img { max-width:min(220px, 70vw); max-height:220px; border-radius:8px; margin-top:6px; display:block; }
-    .reactions { margin-top:4px; display:flex; gap:4px; flex-wrap:wrap; }
-    .reactions .react { background:#f3f4f6; border:1px solid #e5e7eb; border-radius:12px; padding:2px 8px; font-size:12px; cursor:pointer; }
-    .reactions .add { background:transparent; border:1px dashed #d1d5db; color:#6b7280; }
-    footer.compose { background:#fff; border-top:1px solid #e5e5ea; padding:10px; padding-bottom:max(10px, env(safe-area-inset-bottom)); position:sticky; bottom:0; z-index:2; }
-    .compose-inner { max-width:780px; margin:0 auto; display:flex; gap:8px; align-items:center; }
-    .compose textarea { flex:1; resize:none; padding:10px 12px; border-radius:10px; border:1px solid #d1d5db; font-family:inherit; font-size:16px; min-height:40px; max-height:120px; }
-    .compose button { background:#111827; color:#fff; border:0; padding:10px 16px; border-radius:10px; cursor:pointer; font-size:14px; min-height:40px; }
-    .compose button:disabled { opacity:.5; cursor:not-allowed; }
-    .compose .iconbtn { background:#f3f4f6; color:#111827; padding:8px 10px; min-width:40px; }
-    .emoji-pop { position:absolute; background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:6px; box-shadow:0 6px 24px rgba(0,0,0,.08); display:none; z-index:3; max-width:calc(100vw - 24px); flex-wrap:wrap; }
-    .emoji-pop button { background:transparent; border:0; font-size:18px; cursor:pointer; padding:4px; }
-    .archived { background:#fef2f2; color:#991b1b; padding:10px 20px; font-size:13px; }
-    .approved-banner { background:#ecfdf5; color:#065f46; padding:10px 20px; font-size:13px; }
-    .unread-pill { display:inline-block; background:#ef4444; color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; margin-left:6px; }
-    .receipts { font-size:11px; color:#9ca3af; margin-left:6px; }
-    .receipts.read { color:#2563eb; }
-    .typing-bar { font-size:12px; color:#6b7280; padding:4px 16px; min-height:18px; max-width:780px; margin:0 auto; width:100%; box-sizing:border-box; }
-    .typing-bar.active { color:#4b5563; }
-    .typing-bar .dot { display:inline-block; width:4px; height:4px; background:#9ca3af; border-radius:50%; margin:0 1px; animation:typing 1.2s infinite; }
-    .typing-bar .dot:nth-child(2) { animation-delay:.15s; }
-    .typing-bar .dot:nth-child(3) { animation-delay:.3s; }
-    @keyframes typing { 0%,80%,100% { opacity:.2; } 40% { opacity:1; } }
-    @media (max-width: 640px) {
-      header.bar .bar-inner { padding:10px 12px; }
-      header.bar h1 { font-size:15px; }
-      header.bar .meta { font-size:12px; }
-      main { padding:10px 12px; }
-      .bubble { max-width:85%; padding:9px 12px; }
-      .msg { margin:6px 0; }
-      footer.compose { padding:8px; padding-bottom:max(8px, env(safe-area-inset-bottom)); }
-      .compose-inner { gap:6px; }
-      .compose textarea { padding:9px 11px; }
-      .compose button { padding:10px 12px; font-size:14px; }
-      .compose .iconbtn { padding:8px; }
-      .typing-bar { padding:4px 12px; }
-      .archived, .approved-banner { padding:10px 12px; font-size:12px; }
+    :root{
+      color-scheme: light;
+      --recv-bg:#E9E9EB; --recv-fg:#000;
+      --sent-bg:#1C1C1E; --sent-fg:#fff;
+      --muted:#8E8E93; --line:#D1D1D6; --line-2:#C6C6C8;
+      --brand-av:#1C1C1E;
+    }
+    html,body{margin:0;padding:0;background:#fff;color:#000;}
+    body{
+      font-family:'Inter',ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+      min-height:100vh;min-height:100dvh;
+    }
+    *{box-sizing:border-box}
+    button{font-family:inherit;border:0;background:none;padding:0;cursor:pointer;color:inherit}
+    ::-webkit-scrollbar{width:8px}
+    ::-webkit-scrollbar-thumb{background:var(--line);border-radius:20px}
+
+    .wrap{min-height:100vh;min-height:100dvh;background:#fff;display:flex;flex-direction:column}
+
+    /* ── HEADER ── */
+    .hdr{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.85);
+      backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
+      border-bottom:.5px solid var(--line)}
+    .hdr-inner{max-width:820px;margin:0 auto;padding:11px 20px 13px;display:flex;flex-direction:column;align-items:center;gap:4px;width:100%}
+    .stack{display:flex;align-items:center}
+    .av{border-radius:99px;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;line-height:1;flex-shrink:0}
+    .av.lg{width:44px;height:44px;font-size:15px;box-shadow:0 0 0 2.5px #fff}
+    .av.lg + .av.lg{margin-left:-14px}
+    .av-creator{background:linear-gradient(135deg,#5AC8FA,#007AFF)}
+    .av-brand{background:var(--brand-av);font-weight:700}
+    .av-admin{background:linear-gradient(135deg,#FFCC00,#FF9500)}
+    .header-title{font-size:15px;font-weight:600;color:#000;letter-spacing:-.01em;margin-top:5px;text-align:center;word-break:break-word}
+    .header-sub{font-size:12px;color:var(--muted);letter-spacing:-.005em;text-align:center}
+
+    /* ── BANNER ── */
+    .banner{max-width:820px;margin:0 auto;width:100%;padding:9px 20px;font-size:12.5px;text-align:center;letter-spacing:-.005em}
+    .banner.archived{background:#FEF2F2;color:#991B1B}
+    .banner.approved{background:#ECFDF5;color:#065F46}
+
+    /* ── FEED ── */
+    .feed{flex:1;padding:14px 20px 22px;max-width:820px;margin:0 auto;width:100%;display:flex;flex-direction:column}
+    #messages{display:flex;flex-direction:column;width:100%}
+    .day-sep{text-align:center;font-size:11px;color:var(--muted);font-weight:600;letter-spacing:-.005em;margin:14px 0 12px}
+    .day-sep .t{font-weight:400}
+    .empty{text-align:center;color:var(--muted);font-size:13px;padding:32px 0}
+
+    .row{display:flex;margin-top:2px}
+    .row.recv{gap:8px;align-items:flex-end;align-self:flex-start;max-width:88%}
+    .row.recv.fresh{margin-top:16px}
+    .row.sent{flex-direction:column;align-items:flex-end;align-self:flex-end;max-width:82%}
+    .row.sent.fresh{margin-top:16px}
+    .row.recv .av{width:30px;height:30px;font-size:12px}
+    .row.recv.grouped .av{visibility:hidden}
+    .cluster{display:flex;flex-direction:column;gap:3px;min-width:0}
+    .label{font-size:11px;color:var(--muted);padding-left:14px;margin-bottom:2px}
+
+    .bubble{position:relative;padding:9px 16px;border-radius:20px;font-size:16px;line-height:1.3;letter-spacing:-.01em;
+      white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;max-width:480px;width:fit-content}
+    .bubble.recv{background:var(--recv-bg);color:var(--recv-fg)}
+    .bubble.sent{background:var(--sent-bg);color:var(--sent-fg)}
+    .row.sent .bubble{align-self:flex-end}
+
+    .att-wrap{position:relative;width:fit-content;margin-top:1px}
+    .att-wrap.sent{align-self:flex-end}
+    .att{display:block;width:240px;max-width:70vw;border-radius:18px;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.08)}
+
+    /* hover react affordance */
+    .react-btn{position:absolute;top:50%;transform:translateY(-50%) scale(.9);opacity:0;pointer-events:none;
+      transition:opacity .12s ease,transform .12s ease;width:28px;height:28px;border-radius:99px;background:#fff;
+      border:.5px solid var(--line);box-shadow:0 2px 6px rgba(0,0,0,.08);display:flex;align-items:center;justify-content:center;color:#3C3C43}
+    .bubble.recv .react-btn,.att-wrap:not(.sent) .react-btn{right:-38px}
+    .bubble.sent .react-btn,.att-wrap.sent .react-btn{left:-38px}
+    .bubble:hover .react-btn,.att-wrap:hover .react-btn{opacity:1;pointer-events:auto;transform:translateY(-50%) scale(1)}
+    .react-btn:hover{background:#F2F2F7}
+
+    /* tapback pill */
+    .react-pill{position:absolute;top:-10px;background:#fff;border:.5px solid var(--line);border-radius:99px;
+      padding:3px 8px;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.08);display:flex;align-items:center;gap:3px;line-height:1;z-index:2}
+    .bubble.recv .react-pill,.att-wrap:not(.sent) .react-pill{right:-6px}
+    .bubble.sent .react-pill,.att-wrap.sent .react-pill{left:-6px}
+    .react-pill .rx{display:inline-flex;align-items:center;gap:2px}
+    .react-pill .rx b{font-size:11px;color:#3C3C43;font-weight:500}
+
+    .status{font-size:10px;color:var(--muted);margin-top:5px;padding-right:6px;letter-spacing:.01em;align-self:flex-end}
+
+    /* typing */
+    .typing-bubble{background:var(--recv-bg);padding:11px 16px;border-radius:20px;display:flex;gap:5px;align-items:center;width:fit-content}
+    .typing-bubble .dot{width:7px;height:7px;background:var(--muted);border-radius:99px;animation:bob 1.2s infinite}
+    .typing-bubble .dot:nth-child(2){animation-delay:.15s}
+    .typing-bubble .dot:nth-child(3){animation-delay:.3s}
+    @keyframes bob{0%,60%,100%{transform:translateY(0);opacity:.35}30%{transform:translateY(-3px);opacity:1}}
+
+    /* ── COMPOSER ── */
+    .composer{position:sticky;bottom:0;background:rgba(255,255,255,.85);
+      backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--line)}
+    .composer-row{max-width:820px;margin:0 auto;padding:10px 16px 6px;display:flex;align-items:flex-end;gap:10px}
+    .attach-btn{width:38px;height:38px;border-radius:99px;background:var(--recv-bg);color:var(--sent-bg);
+      display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .attach-btn:disabled{opacity:.4;cursor:not-allowed}
+    .composer-input{flex:1;background:#fff;border:.5px solid var(--line-2);border-radius:22px;
+      padding:6px 6px 6px 16px;display:flex;align-items:flex-end;gap:6px;min-height:38px}
+    .editable{flex:1;font-size:16px;line-height:1.35;color:#000;outline:none;letter-spacing:-.01em;
+      max-height:120px;overflow-y:auto;padding:5px 0;word-break:break-word}
+    .editable[data-empty="true"]:before{content:attr(data-placeholder);color:var(--muted);pointer-events:none}
+    .send-btn{width:28px;height:28px;border-radius:99px;background:var(--sent-bg);color:#fff;
+      display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-bottom:2px}
+    .send-btn:disabled{background:#C7C7CC;cursor:not-allowed}
+    .notify-hint{max-width:820px;margin:0 auto;padding:2px 20px calc(10px + env(safe-area-inset-bottom));
+      font-size:11px;color:var(--muted);text-align:center;letter-spacing:-.005em}
+
+    .emoji-pop{position:fixed;background:#fff;border:.5px solid var(--line);border-radius:14px;padding:6px;
+      box-shadow:0 8px 28px rgba(0,0,0,.16);display:none;z-index:50;max-width:calc(100vw - 24px)}
+    .emoji-pop button{font-size:22px;padding:5px;border-radius:8px;line-height:1}
+    .emoji-pop button:hover{background:#F2F2F7}
+
+    @media (max-width:640px){
+      .hdr-inner{padding:9px 12px 11px}
+      .av.lg{width:38px;height:38px;font-size:13px}
+      .header-title{font-size:14px}
+      .header-sub{font-size:11px}
+      .feed{padding:12px 12px 18px}
+      .row.recv{max-width:92%}
+      .row.sent{max-width:86%}
+      .bubble{font-size:15px;padding:8px 14px;max-width:100%}
+      .react-btn{display:none !important}
+      .att{width:200px}
+      .composer-row{padding:8px 10px 6px;gap:8px}
+      .attach-btn{width:34px;height:34px}
+      .attach-btn svg{width:18px;height:18px}
+      .composer-input{padding:5px 5px 5px 14px;min-height:34px}
+      .editable{font-size:15px}
+      .send-btn{width:26px;height:26px}
+      .banner{padding:9px 12px;font-size:12px}
     }
   </style>
 </head>
-<body data-space-slug="{{ space.public_slug or space.id }}" data-self-party="{{ self_party }}" data-archived="{{ 'true' if space.status != 'active' else 'false' }}">
-  <header class="bar">
-    <div class="bar-inner">
-      <h1>{{ chat_title }}</h1>
-      <div class="meta">Campaign: {{ space.campaign_name or '—' }} · Brand: {{ space.brand_name or '—' }}</div>
+<body
+  data-space-slug="{{ space.public_slug or space.id }}"
+  data-self-party="{{ self_party }}"
+  data-archived="{{ 'true' if space.status != 'active' else 'false' }}"
+  data-brand-name="{{ space.brand_name or '' }}"
+  data-creator-username="{{ space.creator_username or '' }}">
+
+  <div class="wrap">
+
+    <!-- HEADER -->
+    <div class="hdr">
+      <div class="hdr-inner">
+        <div class="stack">
+          <div class="av lg av-creator">{{ (space.creator_username or 'C')[:2] | upper }}</div>
+          <div class="av lg av-brand">{{ (space.brand_name or 'B')[:1] | upper }}</div>
+          <div class="av lg av-admin">JP</div>
+        </div>
+        <div class="header-title">{{ space.brand_name or space.campaign_name or 'Chat' }} &times; @{{ space.creator_username }}</div>
+        <div class="header-sub">3 people &middot; {{ space.campaign_name or space.brand_name or 'Campaign' }}</div>
+      </div>
     </div>
-  </header>
-  {% if space.status == 'archived' %}
-  <div class="archived">This campaign has ended — chat is archived and read-only.</div>
-  {% elif space.status == 'approved' %}
-  <div class="approved-banner">This review has been approved — chat is closed and read-only.</div>
-  {% endif %}
-  <main id="messages"></main>
-  <div class="typing-bar" id="typingBar"></div>
-  <footer class="compose">
-    <form class="compose-inner" id="composeForm" autocomplete="off">
-      <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
-      <button type="button" class="iconbtn" id="fileBtn" title="Attach image">📎</button>
-      <button type="button" class="iconbtn" id="emojiBtn" title="Emoji">😀</button>
-      <textarea id="bodyInput" placeholder="Type a message…" {% if space.status != 'active' %}disabled{% endif %}></textarea>
-      <button type="submit" id="sendBtn" {% if space.status != 'active' %}disabled{% endif %}>Send</button>
-    </form>
-    <div class="emoji-pop" id="emojiPop">
-      <button>👍</button><button>❤️</button><button>🎉</button><button>🔥</button><button>😂</button><button>👀</button><button>🙏</button><button>✅</button>
+
+    {% if space.status == 'archived' %}
+    <div class="banner archived">This campaign has ended — chat is archived and read-only.</div>
+    {% elif space.status == 'approved' %}
+    <div class="banner approved">This review has been approved — chat is closed and read-only.</div>
+    {% endif %}
+
+    <!-- FEED -->
+    <div class="feed">
+      <div id="messages"></div>
+      <div id="typingWrap"></div>
     </div>
-  </footer>
+
+    <!-- COMPOSER -->
+    <div class="composer">
+      <div class="composer-row">
+        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
+        <button type="button" class="attach-btn" id="fileBtn" title="Attach image" {% if space.status != 'active' %}disabled{% endif %}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><path d="M21 15l-5-5L5 21"></path></svg>
+        </button>
+        <div class="composer-input">
+          <div class="editable" id="bodyInput" contenteditable="{{ 'false' if space.status != 'active' else 'true' }}"
+               data-empty="true" data-placeholder="Message" role="textbox" aria-label="Message"></div>
+          <button type="button" class="send-btn" id="sendBtn" title="Send" {% if space.status != 'active' %}disabled{% endif %}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+          </button>
+        </div>
+      </div>
+      <div class="notify-hint">{% if self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
+    </div>
+
+  </div>
+
+  <div class="emoji-pop" id="emojiPop">
+    <button>👍</button><button>❤️</button><button>🎉</button><button>🔥</button><button>😂</button><button>👀</button><button>🙏</button><button>✅</button>
+  </div>
 
 <script id="initial-read-state" type="application/json">{{ initial_read_state | tojson }}</script>
 <script>
-(function() {
-  const bodyEl = document.body;
-  const spaceSlug = bodyEl.dataset.spaceSlug;
-  const selfParty = bodyEl.dataset.selfParty;
-  const archived = bodyEl.dataset.archived === 'true';
-  const messagesEl = document.getElementById('messages');
-  const composeForm = document.getElementById('composeForm');
-  const bodyInput = document.getElementById('bodyInput');
-  const sendBtn = document.getElementById('sendBtn');
-  const fileBtn = document.getElementById('fileBtn');
-  const fileInput = document.getElementById('fileInput');
-  const emojiBtn = document.getElementById('emojiBtn');
-  const emojiPop = document.getElementById('emojiPop');
-  const typingBar = document.getElementById('typingBar');
+(function(){
+  var bodyEl = document.body;
+  var spaceSlug = bodyEl.dataset.spaceSlug;
+  var selfParty = bodyEl.dataset.selfParty;
+  var archived = bodyEl.dataset.archived === 'true';
+  var brandName = bodyEl.dataset.brandName || 'Brand';
+  var creatorUsername = bodyEl.dataset.creatorUsername || 'Creator';
 
-  let lastId = 0;
-  // party -> highest last_read_message_id seen for that party.
-  const readState = JSON.parse(document.getElementById('initial-read-state').textContent || '{}');
-  // identifier -> { name, until_ts } for currently-typing remote users.
-  const typingUsers = new Map();
+  var messagesEl = document.getElementById('messages');
+  var typingWrap = document.getElementById('typingWrap');
+  var editable = document.getElementById('bodyInput');
+  var sendBtn = document.getElementById('sendBtn');
+  var fileBtn = document.getElementById('fileBtn');
+  var fileInput = document.getElementById('fileInput');
+  var emojiPop = document.getElementById('emojiPop');
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  }
+  var lastId = 0;
+  var initialLoaded = false;
+  var readState = JSON.parse(document.getElementById('initial-read-state').textContent || '{}');
+  var typingUsers = new Map();
+  // Tracks the previously appended message so we can group clusters and
+  // insert day separators without re-scanning the whole feed.
+  var prevAppend = null;
 
-  function receiptHtml(m) {
-    if (m.party !== selfParty) return '';
-    // For a message I sent: read by the OTHER party if any of their members
-    // has last_read >= m.id.
-    let readByOther = false;
-    for (const [p, last] of Object.entries(readState)) {
-      if (p !== selfParty && last >= m.id) { readByOther = true; break; }
-    }
-    return '<span class="receipts' + (readByOther ? ' read' : '') + '">' +
-      (readByOther ? '✓✓' : '✓') + '</span>';
-  }
+  var SMILEY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg>';
 
-  function renderMessage(m, opts) {
-    const upsert = opts && opts.upsert;
-    let div = messagesEl.querySelector('[data-id="' + m.id + '"]');
-    const mine = m.party === selfParty;
-    if (!div) {
-      div = document.createElement('div');
-      div.className = 'msg ' + (mine ? 'me' : 'them');
-      div.dataset.id = m.id;
-      messagesEl.appendChild(div);
-    } else if (!upsert) {
-      return;
-    }
-    let attHtml = '';
-    if (m.attachments && m.attachments.length) {
-      attHtml = '<div class="attachments">' + m.attachments.map(a => {
-        return '<img src="/chat/attachment/' + a.id + '" alt="' + escapeHtml(a.filename) + '">';
-      }).join('') + '</div>';
-    }
-    let reactHtml = '';
-    const reactions = m.reactions || {};
-    const keys = Object.keys(reactions);
-    if (keys.length || !archived) {
-      reactHtml = '<div class="reactions">';
-      for (const k of keys) {
-        reactHtml += '<button class="react" data-emoji="' + escapeHtml(k) + '" data-msg="' + m.id + '">' + escapeHtml(k) + ' ' + reactions[k] + '</button>';
-      }
-      if (!archived) reactHtml += '<button class="react add" data-msg="' + m.id + '">+</button>';
-      reactHtml += '</div>';
-    }
-    const ts = m.created_at ? new Date(m.created_at).toLocaleString() : '';
-    const bodyText = (m.body || '').trim();
-    const bodyHtml = bodyText ? '<div class="body">' + escapeHtml(bodyText) + '</div>' : '';
-    div.innerHTML =
-      '<div class="bubble">' +
-      '<div class="who">' + escapeHtml(m.sender || m.party) + '</div>' +
-      bodyHtml +
-      attHtml + reactHtml +
-      '<div class="ts">' + escapeHtml(ts) + receiptHtml(m) + '</div>' +
-      '</div>';
-    if (m.id > lastId) lastId = m.id;
-  }
-
-  function rerenderReceiptsOnly() {
-    // Cheap pass: only update the receipt spans for messages I sent.
-    messagesEl.querySelectorAll('.msg.me').forEach(div => {
-      const id = parseInt(div.dataset.id, 10);
-      const span = div.querySelector('.receipts');
-      if (!span) return;
-      let readByOther = false;
-      for (const [p, last] of Object.entries(readState)) {
-        if (p !== selfParty && last >= id) { readByOther = true; break; }
-      }
-      span.className = 'receipts' + (readByOther ? ' read' : '');
-      span.textContent = readByOther ? '✓✓' : '✓';
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
     });
   }
 
-  function scrollToBottom() {
-    window.scrollTo(0, document.body.scrollHeight);
+  function initials(name){
+    var s = String(name || '').trim().replace(/^@+/, '');
+    if(!s) return 'U';
+    var words = s.split(/[ ._-]+/).filter(Boolean);
+    if(words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+    return s.slice(0,2).toUpperCase();
   }
 
-  function sendRead() {
-    if (!lastId) return;
+  // Per-party avatar + label metadata for received bubbles.
+  function roleMeta(party, sender){
+    if(party === 'admin') return {label:'Jennifer · INFLUENCE', initials:'JP', cls:'av-admin'};
+    if(party === 'brand'){
+      return {label:(sender || (brandName + ' Team')) + ' · Brand',
+              initials:(brandName || 'B').slice(0,1).toUpperCase(), cls:'av-brand'};
+    }
+    var cu = sender || creatorUsername;
+    return {label:'@' + cu + ' · Creator', initials:initials(cu), cls:'av-creator'};
+  }
+
+  function dayKey(d){ return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(); }
+  function fmtTime(d){ return d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}); }
+  function fmtDay(d){
+    var now = new Date();
+    var today = dayKey(now);
+    var y = new Date(now.getTime() - 86400000);
+    if(dayKey(d) === today) return 'Today';
+    if(dayKey(d) === dayKey(y)) return 'Yesterday';
+    return d.toLocaleDateString([], {month:'short', day:'numeric'});
+  }
+  function insertDaySep(d){
+    var el = document.createElement('div');
+    el.className = 'day-sep';
+    el.innerHTML = '<span>' + escapeHtml(fmtDay(d)) + '</span> <span class="t">' + escapeHtml(fmtTime(d)) + '</span>';
+    messagesEl.appendChild(el);
+  }
+
+  function reactionPillHtml(m){
+    var r = m.reactions || {};
+    var keys = Object.keys(r);
+    if(!keys.length) return '';
+    var inner = '';
+    for(var i=0;i<keys.length;i++){
+      var k = keys[i];
+      inner += '<span class="rx">' + escapeHtml(k) + (r[k] > 1 ? '<b>' + r[k] + '</b>' : '') + '</span>';
+    }
+    return '<button class="react-pill" data-msg="' + m.id + '" title="React">' + inner + '</button>';
+  }
+
+  function reactBtnHtml(m){
+    if(archived) return '';
+    return '<button class="react-btn" data-msg="' + m.id + '" title="React">' + SMILEY + '</button>';
+  }
+
+  // Builds the bubble(s) + attachment(s) for one message. The hover react
+  // button and tapback pill are attached to the "primary" element (the text
+  // bubble when there is text, else the first image).
+  function buildContent(m, mine){
+    var bodyText = (m.body || '').trim();
+    var atts = m.attachments || [];
+    var hasBody = !!bodyText;
+    var pill = reactionPillHtml(m);
+    var rbtn = reactBtnHtml(m);
+    var html = '';
+    if(hasBody){
+      html += '<div class="bubble ' + (mine ? 'sent' : 'recv') + '">' +
+        escapeHtml(bodyText) + rbtn + pill + '</div>';
+    }
+    for(var i=0;i<atts.length;i++){
+      var a = atts[i];
+      var primary = !hasBody && i === 0;
+      html += '<div class="att-wrap' + (mine ? ' sent' : '') + '">' +
+        '<img class="att" src="/chat/attachment/' + a.id + '" alt="' + escapeHtml(a.filename || 'attachment') + '" loading="lazy">' +
+        (primary ? (rbtn + pill) : '') + '</div>';
+    }
+    return html;
+  }
+
+  function primaryHost(row){
+    return row.querySelector('.bubble') || row.querySelector('.att-wrap');
+  }
+
+  function applyReactions(msgId, counts){
+    var row = messagesEl.querySelector('[data-id="' + msgId + '"]');
+    if(!row){ backfill(); return; }
+    var host = primaryHost(row);
+    if(!host) return;
+    var old = host.querySelector('.react-pill');
+    if(old) old.remove();
+    var html = reactionPillHtml({id:msgId, reactions:counts || {}});
+    if(html) host.insertAdjacentHTML('beforeend', html);
+  }
+
+  function updateReceipts(){
+    var sent = messagesEl.querySelectorAll('.row.sent');
+    for(var i=0;i<sent.length;i++){
+      var row = sent[i];
+      var st = row.querySelector('.status');
+      if(i !== sent.length - 1){ if(st) st.remove(); continue; }
+      if(!st){ st = document.createElement('div'); st.className = 'status'; row.appendChild(st); }
+      var id = parseInt(row.dataset.id, 10);
+      var readByOther = false;
+      var entries = Object.entries(readState);
+      for(var j=0;j<entries.length;j++){
+        if(entries[j][0] !== selfParty && entries[j][1] >= id){ readByOther = true; break; }
+      }
+      st.textContent = readByOther ? 'Read' : 'Delivered';
+    }
+  }
+
+  function renderMessage(m, opts){
+    var upsert = opts && opts.upsert;
+    var existing = messagesEl.querySelector('[data-id="' + m.id + '"]');
+    var mine = m.party === selfParty;
+    if(existing){
+      if(upsert) applyReactions(m.id, m.reactions || {});
+      if(m.id > lastId) lastId = m.id;
+      return;
+    }
+    var ph = messagesEl.querySelector('.empty');
+    if(ph) ph.remove();
+    var created = m.created_at ? new Date(m.created_at) : new Date();
+    var dk = dayKey(created);
+    var freshDay = !prevAppend || prevAppend.day !== dk;
+    if(freshDay) insertDaySep(created);
+    var grouped = !mine && prevAppend && !prevAppend.mine &&
+                  prevAppend.party === m.party && prevAppend.sender === (m.sender || '') && !freshDay;
+
+    var row = document.createElement('div');
+    row.dataset.id = m.id;
+    row.dataset.party = m.party;
+    row.dataset.sender = m.sender || '';
+
+    if(mine){
+      row.className = 'row sent' + ((prevAppend && !freshDay && prevAppend.mine) ? '' : ' fresh');
+      row.innerHTML = '<div class="cluster">' + buildContent(m, true) + '</div>';
+    } else {
+      var freshCluster = !grouped;
+      row.className = 'row recv' + (grouped ? ' grouped' : '') + (freshCluster ? ' fresh' : '');
+      var meta = roleMeta(m.party, m.sender);
+      var av = '<div class="av ' + meta.cls + '">' + escapeHtml(meta.initials) + '</div>';
+      var label = grouped ? '' : '<div class="label">' + escapeHtml(meta.label) + '</div>';
+      row.innerHTML = av + '<div class="cluster">' + label + buildContent(m, false) + '</div>';
+    }
+
+    messagesEl.appendChild(row);
+    prevAppend = {party:m.party, sender:(m.sender || ''), mine:mine, day:dk};
+    if(m.id > lastId) lastId = m.id;
+    updateReceipts();
+  }
+
+  function nearBottom(){
+    return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 160);
+  }
+  function scrollToBottom(){ window.scrollTo(0, document.body.scrollHeight); }
+
+  function sendRead(){
+    if(!lastId) return;
     fetch('/chat/' + spaceSlug + '/read', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ up_to: lastId }),
-    }).catch(() => {});
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({up_to:lastId}),
+    }).catch(function(){});
   }
 
-  async function backfill() {
-    try {
-      const r = await fetch('/chat/' + spaceSlug + '/messages?since=' + lastId, { credentials: 'same-origin' });
-      if (!r.ok) return;
-      const data = await r.json();
-      if (data.messages && data.messages.length) {
-        for (const m of data.messages) renderMessage(m, { upsert: true });
-        scrollToBottom();
+  async function backfill(){
+    try{
+      var r = await fetch('/chat/' + spaceSlug + '/messages?since=' + lastId, {credentials:'same-origin'});
+      if(!r.ok) return;
+      var data = await r.json();
+      if(data.messages && data.messages.length){
+        var stick = !initialLoaded || nearBottom();
+        for(var i=0;i<data.messages.length;i++) renderMessage(data.messages[i], {upsert:true});
+        if(stick) scrollToBottom();
         sendRead();
       }
-    } catch (e) { /* swallow */ }
+    }catch(e){}
   }
 
-  function renderTypingBar() {
-    const now = Date.now();
-    const names = [];
-    for (const [ident, info] of typingUsers) {
-      if (info.until_ts < now) typingUsers.delete(ident);
-      else names.push(info.name);
-    }
-    if (!names.length) {
-      typingBar.textContent = '';
-      typingBar.classList.remove('active');
-      return;
-    }
-    typingBar.classList.add('active');
-    const label = names.length === 1 ? names[0] + ' is typing' : names.join(', ') + ' are typing';
-    typingBar.innerHTML = escapeHtml(label) + ' <span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+  // ── Typing indicator (inline bubble) ──
+  function renderTyping(){
+    var now = Date.now();
+    var who = null;
+    typingUsers.forEach(function(info, key){
+      if(info.until < now) typingUsers.delete(key);
+      else if(!who) who = info;
+    });
+    if(!who){ typingWrap.innerHTML = ''; return; }
+    var meta = roleMeta(who.party, who.name);
+    var wasEmpty = !typingWrap.innerHTML;
+    typingWrap.innerHTML =
+      '<div class="row recv fresh"><div class="av ' + meta.cls + '">' + escapeHtml(meta.initials) + '</div>' +
+      '<div class="cluster"><div class="typing-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div></div>';
+    if(wasEmpty && nearBottom()) scrollToBottom();
   }
-  setInterval(renderTypingBar, 1000);
+  setInterval(renderTyping, 1000);
 
-  // --- Live updates via SSE, with periodic backfill as a safety net. ---
-  let sse = null;
-  function connectSSE() {
-    if (typeof EventSource === 'undefined') return;
-    try { sse = new EventSource('/chat/' + spaceSlug + '/stream'); } catch (e) { return; }
-    sse.addEventListener('hello', () => backfill());
-    sse.addEventListener('message', (ev) => {
-      try {
-        const m = JSON.parse(ev.data);
-        renderMessage(m, { upsert: true });
-        scrollToBottom();
+  // A message from a party means they've stopped typing — drop their bubble.
+  function clearTypingFor(party){
+    var changed = false;
+    typingUsers.forEach(function(info, key){ if(info.party === party){ typingUsers.delete(key); changed = true; } });
+    if(changed) renderTyping();
+  }
+
+  // ── Live updates via SSE, with periodic backfill as a safety net ──
+  var sse = null;
+  function connectSSE(){
+    if(typeof EventSource === 'undefined') return;
+    try{ sse = new EventSource('/chat/' + spaceSlug + '/stream'); }catch(e){ return; }
+    sse.addEventListener('hello', function(){ backfill(); });
+    sse.addEventListener('message', function(ev){
+      try{
+        var m = JSON.parse(ev.data);
+        var stick = (m.party === selfParty) || nearBottom();
+        renderMessage(m, {upsert:true});
+        clearTypingFor(m.party);
+        if(stick) scrollToBottom();
         sendRead();
-      } catch (e) {}
+      }catch(e){}
     });
-    sse.addEventListener('reaction', (ev) => {
-      try {
-        const d = JSON.parse(ev.data);
-        const div = messagesEl.querySelector('[data-id="' + d.message_id + '"] .reactions');
-        if (!div) { backfill(); return; }
-        let html = '';
-        for (const [k, n] of Object.entries(d.counts || {})) {
-          html += '<button class="react" data-emoji="' + escapeHtml(k) + '" data-msg="' + d.message_id + '">' + escapeHtml(k) + ' ' + n + '</button>';
-        }
-        if (!archived) html += '<button class="react add" data-msg="' + d.message_id + '">+</button>';
-        div.innerHTML = html;
-      } catch (e) {}
+    sse.addEventListener('reaction', function(ev){
+      try{ var d = JSON.parse(ev.data); applyReactions(d.message_id, d.counts || {}); }catch(e){}
     });
-    sse.addEventListener('read', (ev) => {
-      try {
-        const d = JSON.parse(ev.data);
-        const current = readState[d.party] || 0;
-        if (d.last_read_message_id > current) {
+    sse.addEventListener('read', function(ev){
+      try{
+        var d = JSON.parse(ev.data);
+        var current = readState[d.party] || 0;
+        if(d.last_read_message_id > current){
           readState[d.party] = d.last_read_message_id;
-          rerenderReceiptsOnly();
+          updateReceipts();
         }
-      } catch (e) {}
+      }catch(e){}
     });
-    sse.addEventListener('typing', (ev) => {
-      try {
-        const d = JSON.parse(ev.data);
-        if (d.party === selfParty) return;
-        const key = d.party + ':' + d.identifier;
-        typingUsers.set(key, { name: d.display_name || d.party, until_ts: Date.now() + 5000 });
-        renderTypingBar();
-      } catch (e) {}
+    sse.addEventListener('typing', function(ev){
+      try{
+        var d = JSON.parse(ev.data);
+        if(d.party === selfParty) return;
+        typingUsers.set(d.party + ':' + d.identifier, {party:d.party, name:d.display_name || d.party, until:Date.now() + 5000});
+        renderTyping();
+      }catch(e){}
     });
-    sse.onerror = () => {
-      // Browser will auto-reconnect; if it can't, our setInterval backfill
-      // below keeps the chat usable.
-    };
+    sse.onerror = function(){ /* browser auto-reconnects; backfill covers gaps */ };
   }
   connectSSE();
   setInterval(backfill, 30000);
 
-  // --- Compose + send ---
-  async function sendMessage(body, file) {
-    const form = new FormData();
-    if (body) form.append('body', body);
-    if (file) form.append('attachment', file);
-    if (!body && !file) return;
+  // ── Compose + send ──
+  function getBody(){ return (editable.textContent || '').trim(); }
+  function updateEmptyState(){ editable.setAttribute('data-empty', getBody() ? 'false' : 'true'); }
+  function clearBody(){ editable.textContent = ''; updateEmptyState(); }
+
+  async function sendMessage(body, file){
+    if(archived) return;
+    if(!body && !file) return;
+    var form = new FormData();
+    if(body) form.append('body', body);
+    if(file) form.append('attachment', file);
     sendBtn.disabled = true;
-    try {
-      const r = await fetch('/chat/' + spaceSlug + '/messages', {
-        method: 'POST', credentials: 'same-origin', body: form,
-      });
-      if (r.ok) {
-        bodyInput.value = '';
-        // The SSE `message` event will render the new bubble; if SSE is
-        // down, the 30s backfill will catch up.
-      }
-    } finally { sendBtn.disabled = archived; }
+    try{
+      var r = await fetch('/chat/' + spaceSlug + '/messages', {method:'POST', credentials:'same-origin', body:form});
+      if(r.ok) clearBody();
+    }finally{ sendBtn.disabled = archived; }
   }
 
-  composeForm.addEventListener('submit', e => {
-    e.preventDefault();
-    sendMessage(bodyInput.value.trim(), null);
-  });
+  sendBtn.addEventListener('click', function(){ sendMessage(getBody(), null); });
 
-  let lastTypingPing = 0;
-  function pingTyping() {
-    if (archived) return;
-    const now = Date.now();
-    if (now - lastTypingPing < 2000) return;
+  var lastTypingPing = 0;
+  function pingTyping(){
+    if(archived) return;
+    var now = Date.now();
+    if(now - lastTypingPing < 2000) return;
     lastTypingPing = now;
-    fetch('/chat/' + spaceSlug + '/typing', { method: 'POST', credentials: 'same-origin' })
-      .catch(() => {});
+    fetch('/chat/' + spaceSlug + '/typing', {method:'POST', credentials:'same-origin'}).catch(function(){});
   }
-  bodyInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composeForm.requestSubmit(); return; }
+
+  editable.addEventListener('input', updateEmptyState);
+  editable.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(getBody(), null); return; }
     pingTyping();
   });
-  fileBtn.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files && fileInput.files[0]) {
-      sendMessage(bodyInput.value.trim(), fileInput.files[0]);
+  // Keep pasted content plain-text so the bubble body stays clean.
+  editable.addEventListener('paste', function(e){
+    e.preventDefault();
+    var t = (e.clipboardData || window.clipboardData).getData('text');
+    document.execCommand('insertText', false, t);
+  });
+
+  fileBtn.addEventListener('click', function(){ if(!archived) fileInput.click(); });
+  fileInput.addEventListener('change', function(){
+    if(fileInput.files && fileInput.files[0]){
+      sendMessage(getBody(), fileInput.files[0]);
       fileInput.value = '';
     }
   });
 
-  let emojiTargetMsg = null;
-  emojiBtn.addEventListener('click', () => {
-    emojiTargetMsg = null;
-    const rect = emojiBtn.getBoundingClientRect();
-    emojiPop.style.left = rect.left + 'px';
-    emojiPop.style.top = (rect.top - 50) + 'px';
-    emojiPop.style.display = emojiPop.style.display === 'block' ? 'none' : 'block';
-  });
-  emojiPop.addEventListener('click', e => {
-    if (e.target.tagName !== 'BUTTON') return;
-    const emoji = e.target.textContent;
+  // ── Reactions via emoji popover ──
+  var emojiTargetMsg = null;
+  function openEmojiPop(x, y){
+    emojiPop.style.display = 'block';
+    var w = emojiPop.offsetWidth, h = emojiPop.offsetHeight;
+    var left = Math.max(8, Math.min(x, window.innerWidth - w - 8));
+    var top = Math.max(8, y - h - 8);
+    emojiPop.style.left = left + 'px';
+    emojiPop.style.top = top + 'px';
+  }
+  emojiPop.addEventListener('click', function(e){
+    if(e.target.tagName !== 'BUTTON') return;
+    var emoji = e.target.textContent;
     emojiPop.style.display = 'none';
-    if (emojiTargetMsg) {
-      fetch('/chat/' + spaceSlug + '/messages/' + emojiTargetMsg + '/react', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ emoji }),
-      });
-    } else {
-      bodyInput.value += emoji;
-      bodyInput.focus();
+    if(emojiTargetMsg == null) return;
+    fetch('/chat/' + spaceSlug + '/messages/' + emojiTargetMsg + '/react', {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({emoji:emoji}),
+    }).catch(function(){});
+  });
+  document.addEventListener('click', function(e){
+    if(emojiPop.style.display === 'block' && !emojiPop.contains(e.target) && !e.target.closest('.react-btn') && !e.target.closest('.react-pill')){
+      emojiPop.style.display = 'none';
     }
   });
 
-  messagesEl.addEventListener('click', e => {
-    const btn = e.target.closest('.react');
-    if (!btn) return;
-    const msgId = btn.dataset.msg;
-    if (btn.classList.contains('add')) {
-      emojiTargetMsg = msgId;
-      const rect = btn.getBoundingClientRect();
-      emojiPop.style.left = rect.left + 'px';
-      emojiPop.style.top = (rect.top - 50) + 'px';
-      emojiPop.style.display = 'block';
-      return;
-    }
-    fetch('/chat/' + spaceSlug + '/messages/' + msgId + '/react', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emoji: btn.dataset.emoji }),
-    });
+  messagesEl.addEventListener('click', function(e){
+    var btn = e.target.closest('.react-btn') || e.target.closest('.react-pill');
+    if(!btn || archived) return;
+    emojiTargetMsg = btn.dataset.msg;
+    var rect = btn.getBoundingClientRect();
+    openEmojiPop(rect.left, rect.top);
   });
 
-  backfill().then(scrollToBottom);
+  updateEmptyState();
+  backfill().then(function(){
+    initialLoaded = true;
+    if(!lastId) messagesEl.innerHTML = '<div class="empty">No messages yet — start the conversation 👋</div>';
+    scrollToBottom();
+  });
 })();
 </script>
 </body>
