@@ -17,9 +17,6 @@ CHAT_PAGE = """\
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{{ chat_title }} — INFLUENCE</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root{
       color-scheme: light;
@@ -30,7 +27,7 @@ CHAT_PAGE = """\
     }
     html,body{margin:0;padding:0;background:#fff;color:#000;}
     body{
-      font-family:'Inter',ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+      font-family:-apple-system,BlinkMacSystemFont,ui-sans-serif,"Segoe UI",Roboto,Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol";
       -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
       min-height:100vh;min-height:100dvh;
     }
