@@ -212,7 +212,7 @@ CHAT_PAGE = """\
           </button>
         </div>
       </div>
-      <div class="notify-hint">{{ space.brand_name or 'The brand' }} and Jennifer will be notified</div>
+      <div class="notify-hint">{% if self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
     </div>
 
   </div>
