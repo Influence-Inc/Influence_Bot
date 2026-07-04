@@ -93,6 +93,11 @@ CHAT_PAGE = """\
     .bubble.sent .react-btn,.att-wrap.sent .react-btn{left:-38px}
     .bubble:hover .react-btn,.att-wrap:hover .react-btn{opacity:1;pointer-events:auto;transform:translateY(-50%) scale(1)}
     .react-btn:hover{background:#F2F2F7}
+    /* Touch devices have no hover: long-press a bubble to react. Suppress the
+       native selection / callout so it doesn't fight the long-press gesture. */
+    @media (hover:none){
+      .bubble,.att-wrap{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+    }
 
     /* tapback pill */
     .react-pill{position:absolute;top:-10px;background:#fff;border:.5px solid var(--line);border-radius:99px;
@@ -582,7 +587,23 @@ CHAT_PAGE = """\
     }
   });
 
+  // Reaction entry points, available to every user on every message:
+  //   • desktop  — hover a bubble → the react (smiley) button
+  //   • any device — tap an existing reaction pill to change/remove it
+  //   • touch    — long-press a bubble to open the emoji picker
+  var lpTimer = null, lpFired = false;
+  function bubbleHostFrom(t){
+    return (t && t.closest) ? (t.closest('.bubble') || t.closest('.att-wrap')) : null;
+  }
+  function openReactPickerFor(host){
+    var row = host.closest('.row');
+    if(!row || archived) return;
+    emojiTargetMsg = row.dataset.id;
+    var r = host.getBoundingClientRect();
+    openEmojiPop(r.left + Math.min(44, r.width / 2), r.top);
+  }
   messagesEl.addEventListener('click', function(e){
+    if(lpFired){ lpFired = false; return; }  // swallow the click a long-press emits
     var img = e.target.closest('.att');
     if(img){ openLightbox(img.getAttribute('src'), img.getAttribute('alt')); return; }
     var btn = e.target.closest('.react-btn') || e.target.closest('.react-pill');
@@ -591,6 +612,23 @@ CHAT_PAGE = """\
     var rect = btn.getBoundingClientRect();
     openEmojiPop(rect.left, rect.top);
   });
+  messagesEl.addEventListener('touchstart', function(e){
+    if(archived) return;
+    var host = bubbleHostFrom(e.target);
+    if(!host) return;
+    lpFired = false;
+    clearTimeout(lpTimer);
+    lpTimer = setTimeout(function(){
+      lpFired = true;
+      openReactPickerFor(host);
+      if(navigator.vibrate){ try{ navigator.vibrate(10); }catch(_){} }
+    }, 450);
+  }, {passive:true});
+  function cancelLongPress(){ clearTimeout(lpTimer); lpTimer = null; }
+  messagesEl.addEventListener('touchmove', cancelLongPress, {passive:true});
+  messagesEl.addEventListener('touchend', function(e){ if(lpFired) e.preventDefault(); cancelLongPress(); });
+  messagesEl.addEventListener('touchcancel', cancelLongPress);
+  messagesEl.addEventListener('contextmenu', function(e){ if(bubbleHostFrom(e.target)) e.preventDefault(); });
 
   // ── Image lightbox (tap image to view full-screen, tap/Esc to close) ──
   function openLightbox(src, alt){
