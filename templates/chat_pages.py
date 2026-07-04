@@ -83,7 +83,7 @@ CHAT_PAGE = """\
 
     .att-wrap{position:relative;width:fit-content;margin-top:1px}
     .att-wrap.sent{align-self:flex-end}
-    .att{display:block;width:240px;max-width:70vw;border-radius:18px;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.08)}
+    .att{display:block;width:240px;max-width:70vw;border-radius:18px;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.08);cursor:zoom-in}
 
     /* hover react affordance */
     .react-btn{position:absolute;top:50%;transform:translateY(-50%) scale(.9);opacity:0;pointer-events:none;
@@ -105,16 +105,18 @@ CHAT_PAGE = """\
     .status{font-size:10px;color:var(--muted);margin-top:5px;padding-right:6px;letter-spacing:.01em;align-self:flex-end}
 
     /* typing */
-    .typing-bubble{background:var(--recv-bg);padding:11px 16px;border-radius:20px;display:flex;gap:5px;align-items:center;width:fit-content}
-    .typing-bubble .dot{width:7px;height:7px;background:var(--muted);border-radius:99px;animation:bob 1.2s infinite}
-    .typing-bubble .dot:nth-child(2){animation-delay:.15s}
-    .typing-bubble .dot:nth-child(3){animation-delay:.3s}
+    .composer-typing{display:none;align-items:center;gap:5px;padding:0 2px;flex-shrink:0}
+    .composer-typing.on{display:inline-flex}
+    .composer-typing .dot{width:7px;height:7px;background:var(--muted);border-radius:99px;animation:bob 1.2s infinite}
+    .composer-typing .dot:nth-child(2){animation-delay:.15s}
+    .composer-typing .dot:nth-child(3){animation-delay:.3s}
+    .composer-input.typing .editable[data-empty="true"]:before{content:''}
     @keyframes bob{0%,60%,100%{transform:translateY(0);opacity:.35}30%{transform:translateY(-3px);opacity:1}}
 
     /* ── COMPOSER ── */
     .composer{position:sticky;bottom:0;background:rgba(255,255,255,.85);
       backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--line)}
-    .composer-row{max-width:820px;margin:0 auto;padding:10px 16px 6px;display:flex;align-items:flex-end;gap:10px}
+    .composer-row{max-width:820px;margin:0 auto;padding:10px 16px 6px;display:flex;align-items:center;gap:10px}
     .attach-btn{width:38px;height:38px;border-radius:99px;background:var(--recv-bg);color:var(--sent-bg);
       display:flex;align-items:center;justify-content:center;flex-shrink:0}
     .attach-btn:disabled{opacity:.4;cursor:not-allowed}
@@ -133,6 +135,12 @@ CHAT_PAGE = """\
       box-shadow:0 8px 28px rgba(0,0,0,.16);display:none;z-index:50;max-width:calc(100vw - 24px)}
     .emoji-pop button{font-size:22px;padding:5px;border-radius:8px;line-height:1}
     .emoji-pop button:hover{background:#F2F2F7}
+
+    /* image lightbox */
+    .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:100;padding:24px;cursor:zoom-out}
+    .lightbox.on{display:flex}
+    .lightbox img{max-width:100%;max-height:100%;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+    .lightbox .lb-close{position:fixed;top:14px;right:18px;width:40px;height:40px;border-radius:99px;background:rgba(255,255,255,.14);color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;line-height:1;cursor:pointer}
 
     @media (max-width:640px){
       .hdr-inner{padding:9px 12px 11px}
@@ -186,7 +194,6 @@ CHAT_PAGE = """\
     <!-- FEED -->
     <div class="feed">
       <div id="messages"></div>
-      <div id="typingWrap"></div>
     </div>
 
     <!-- COMPOSER -->
@@ -197,6 +204,7 @@ CHAT_PAGE = """\
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><path d="M21 15l-5-5L5 21"></path></svg>
         </button>
         <div class="composer-input">
+          <div class="composer-typing" id="composerTyping" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
           <div class="editable" id="bodyInput" contenteditable="{{ 'false' if space.status != 'active' else 'true' }}"
                data-empty="true" data-placeholder="Message" role="textbox" aria-label="Message"></div>
           <button type="button" class="send-btn" id="sendBtn" title="Send" {% if space.status != 'active' %}disabled{% endif %}>
@@ -213,6 +221,11 @@ CHAT_PAGE = """\
     <button>👍</button><button>❤️</button><button>🎉</button><button>🔥</button><button>😂</button><button>👀</button><button>🙏</button><button>✅</button>
   </div>
 
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <button type="button" class="lb-close" id="lbClose" title="Close" aria-label="Close">✕</button>
+    <img id="lbImg" src="" alt="">
+  </div>
+
 <script id="initial-read-state" type="application/json">{{ initial_read_state | tojson }}</script>
 <script>
 (function(){
@@ -224,12 +237,15 @@ CHAT_PAGE = """\
   var creatorUsername = bodyEl.dataset.creatorUsername || 'Creator';
 
   var messagesEl = document.getElementById('messages');
-  var typingWrap = document.getElementById('typingWrap');
   var editable = document.getElementById('bodyInput');
   var sendBtn = document.getElementById('sendBtn');
   var fileBtn = document.getElementById('fileBtn');
   var fileInput = document.getElementById('fileInput');
   var emojiPop = document.getElementById('emojiPop');
+  var composerTyping = document.getElementById('composerTyping');
+  var composerInput = document.querySelector('.composer-input');
+  var lightbox = document.getElementById('lightbox');
+  var lbImg = document.getElementById('lbImg');
 
   var lastId = 0;
   var initialLoaded = false;
@@ -425,21 +441,19 @@ CHAT_PAGE = """\
     }catch(e){}
   }
 
-  // ── Typing indicator (inline bubble) ──
+  // ── Typing indicator — shown at the start of the composer input ──
   function renderTyping(){
     var now = Date.now();
-    var who = null;
+    var someone = false;
     typingUsers.forEach(function(info, key){
       if(info.until < now) typingUsers.delete(key);
-      else if(!who) who = info;
+      else someone = true;
     });
-    if(!who){ typingWrap.innerHTML = ''; return; }
-    var meta = roleMeta(who.party, who.name);
-    var wasEmpty = !typingWrap.innerHTML;
-    typingWrap.innerHTML =
-      '<div class="row recv fresh"><div class="av ' + meta.cls + '">' + escapeHtml(meta.initials) + '</div>' +
-      '<div class="cluster"><div class="typing-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div></div>';
-    if(wasEmpty && nearBottom()) scrollToBottom();
+    // Only surface the other party's dots while you're not composing, so they
+    // never fight your own text for the start of the input box.
+    var show = someone && getBody() === '';
+    composerTyping.classList.toggle('on', show);
+    composerInput.classList.toggle('typing', show);
   }
   setInterval(renderTyping, 1000);
 
@@ -521,7 +535,7 @@ CHAT_PAGE = """\
     fetch('/chat/' + spaceSlug + '/typing', {method:'POST', credentials:'same-origin'}).catch(function(){});
   }
 
-  editable.addEventListener('input', updateEmptyState);
+  editable.addEventListener('input', function(){ updateEmptyState(); renderTyping(); });
   editable.addEventListener('keydown', function(e){
     if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(getBody(), null); return; }
     pingTyping();
@@ -569,11 +583,31 @@ CHAT_PAGE = """\
   });
 
   messagesEl.addEventListener('click', function(e){
+    var img = e.target.closest('.att');
+    if(img){ openLightbox(img.getAttribute('src'), img.getAttribute('alt')); return; }
     var btn = e.target.closest('.react-btn') || e.target.closest('.react-pill');
     if(!btn || archived) return;
     emojiTargetMsg = btn.dataset.msg;
     var rect = btn.getBoundingClientRect();
     openEmojiPop(rect.left, rect.top);
+  });
+
+  // ── Image lightbox (tap image to view full-screen, tap/Esc to close) ──
+  function openLightbox(src, alt){
+    if(!src) return;
+    lbImg.setAttribute('src', src);
+    lbImg.setAttribute('alt', alt || '');
+    lightbox.classList.add('on');
+    lightbox.setAttribute('aria-hidden', 'false');
+  }
+  function closeLightbox(){
+    lightbox.classList.remove('on');
+    lightbox.setAttribute('aria-hidden', 'true');
+    lbImg.setAttribute('src', '');
+  }
+  lightbox.addEventListener('click', function(){ closeLightbox(); });
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape' && lightbox.classList.contains('on')) closeLightbox();
   });
 
   updateEmptyState();

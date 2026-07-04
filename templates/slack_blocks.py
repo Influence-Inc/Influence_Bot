@@ -480,3 +480,44 @@ def build_chat_new_message_blocks(
         },
     ]
 
+
+def build_chat_influence_ping_blocks(
+    *,
+    creator_username: str,
+    brand_name: str,
+    campaign_name: str,
+    sender_name: str,
+    preview: str,
+    admin_url: str = "",
+) -> list[dict]:
+    """
+    New-chat-message ping into the INFLUENCE team channel (#content-reviews),
+    so Jennifer's team stays in the loop on creator <-> brand chatter.
+    """
+    preview = (preview or "").replace("\n", " ").strip()
+    if len(preview) > 200:
+        preview = preview[:197] + "…"
+    header = (
+        f":speech_balloon: *New chat message from {sender_name}*\n"
+        f"*{brand_name}* × @{creator_username} · _{campaign_name}_"
+    )
+    if preview:
+        header = f"{header}\n>{preview}"
+    blocks: list[dict] = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": header}},
+    ]
+    if admin_url:
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open in admin"},
+                        "url": admin_url,
+                    }
+                ],
+            }
+        )
+    return blocks
+
