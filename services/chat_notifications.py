@@ -30,7 +30,10 @@ from models.models import (
 )
 from services.email_service import EmailService
 from templates.email_templates import chat_new_message
-from templates.slack_blocks import build_chat_new_message_blocks
+from templates.slack_blocks import (
+    build_chat_influence_ping_blocks,
+    build_chat_new_message_blocks,
+)
 from utils.chat_tokens import make_invite_token
 
 logger = logging.getLogger(__name__)
@@ -77,12 +80,51 @@ def _load_space(chat_space_id: int) -> Optional[ChatSpace]:
         db.close()
 
 
+def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) -> None:
+    """
+    Slack-ping the INFLUENCE team channel (#content-reviews) so Jennifer's
+    team is kept in the loop on creator <-> brand chat activity. This is what
+    makes the composer's "… and Jennifer will be notified" hint truthful.
+    Best-effort; never raises.
+    """
+    if not Config.SLACK_BOT_TOKEN or not Config.SLACK_CHANNEL_REVIEWS:
+        return
+    admin_url = ""
+    if Config.PUBLIC_BASE_URL:
+        admin_url = f"{Config.PUBLIC_BASE_URL}/admin/chats/{space.id}"
+    try:
+        blocks = build_chat_influence_ping_blocks(
+            creator_username=space.creator_username,
+            brand_name=space.brand_name or "the brand",
+            campaign_name=space.campaign_name or "—",
+            sender_name=sender_name,
+            preview=preview,
+            admin_url=admin_url,
+        )
+        WebClient(token=Config.SLACK_BOT_TOKEN).chat_postMessage(
+            channel=Config.SLACK_CHANNEL_REVIEWS,
+            text=(
+                f"New chat message from {sender_name} — "
+                f"{space.brand_name or 'brand'} × @{space.creator_username}"
+            ),
+            blocks=blocks,
+        )
+    except SlackApiError as exc:
+        err = exc.response.get("error") if exc.response else str(exc)
+        logger.warning("INFLUENCE-team chat ping failed: %s", err)
+    except Exception as exc:
+        logger.warning("INFLUENCE-team chat ping failed: %s", exc)
+
+
 def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int) -> None:
     """
     Out-of-band ping for the *other* side.
       - sender=brand  -> email the creator
       - sender=creator -> Slack-ping the brand channel
       - sender=admin -> Slack-ping the brand channel + email creator
+
+    In addition, every creator/brand message pings the INFLUENCE team channel
+    (Jennifer) so INFLUENCE stays in the loop on the conversation.
     """
     space = _load_space(chat_space_id)
     if space is None:
@@ -144,3 +186,10 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
                 logger.warning("brand new-message Slack post failed: %s", err)
             except Exception as exc:
                 logger.warning("brand new-message Slack post failed: %s", exc)
+
+    # Keep the INFLUENCE team (Jennifer) notified of every creator/brand
+    # message. Admin messages come *from* INFLUENCE, so they're skipped here.
+    if sender_party in ("creator", "brand"):
+        _notify_influence_team(
+            space, sender_name=sender_name, preview=preview or "(image / attachment)"
+        )
