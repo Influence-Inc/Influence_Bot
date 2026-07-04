@@ -91,8 +91,14 @@ CHAT_PAGE = """\
       border:.5px solid var(--line);box-shadow:0 2px 6px rgba(0,0,0,.08);display:flex;align-items:center;justify-content:center;color:#3C3C43}
     .bubble.recv .react-btn,.att-wrap:not(.sent) .react-btn{right:-38px}
     .bubble.sent .react-btn,.att-wrap.sent .react-btn{left:-38px}
-    .bubble:hover .react-btn,.att-wrap:hover .react-btn{opacity:1;pointer-events:auto;transform:translateY(-50%) scale(1)}
+    .bubble:hover .react-btn,.att-wrap:hover .react-btn,.react-btn:hover{opacity:1;pointer-events:auto;transform:translateY(-50%) scale(1)}
     .react-btn:hover{background:#F2F2F7}
+    /* Transparent hover "bridge" spanning the gap between a bubble and its
+       floating react button, so moving the cursor to it never drops :hover
+       (which would hide the button before you could click it). */
+    .react-btn::before{content:'';position:absolute;top:0;bottom:0}
+    .bubble.recv .react-btn::before,.att-wrap:not(.sent) .react-btn::before{left:-14px;width:16px}
+    .bubble.sent .react-btn::before,.att-wrap.sent .react-btn::before{right:-14px;width:16px}
     /* Touch devices have no hover: long-press a bubble to react. Suppress the
        native selection / callout so it doesn't fight the long-press gesture. */
     @media (hover:none){
