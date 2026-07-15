@@ -8,7 +8,7 @@ class Config:
     # --- ReelStats API ---
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
     REELSTATS_API_URL = os.environ.get(
-        "REELSTATS_API_URL", "https://campaigns.influence.technology"
+        "REELSTATS_API_URL", "https://campaign.influence.technology"
     )
 
     # --- Slack ---
