@@ -77,7 +77,7 @@ Creator submits video via Tally
 | **Tally** | Creator form submissions, video uploads | https://tally.so/dashboard |
 | **Email (SMTP)** | Follow-ups and approval notifications | `jennifer@useinfluence.xyz` |
 | **Instagram Graph API** | Creator stats and performance tracking | Meta Developer API |
-| **Campaign Website** | Campaign management | https://campaigns.influence.technology/reve/reve-features |
+| **Campaign Website** | Campaign management | https://campaign.influence.technology/reve/reve-features |
 
 ## Setup
 
@@ -158,7 +158,7 @@ supported server.
    | Variable | Value |
    |---|---|
    | `BOT_TOKEN` | ReelStats polling token |
-   | `REELSTATS_API_URL` | `https://campaigns.influence.technology` |
+   | `REELSTATS_API_URL` | `https://campaign.influence.technology` |
    | `SLACK_BOT_TOKEN` | `xoxb-…` |
    | `SLACK_SIGNING_SECRET` | from Slack app |
    | `SLACK_CHANNEL_ID` | e.g. `C0XXXXXXXXX` |
