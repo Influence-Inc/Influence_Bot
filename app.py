@@ -2,7 +2,8 @@
 INFLUENCE Bot — Main Application Entry Point
 
 An automated Slack bot for INFLUENCE (influencer marketing) that:
-- Polls the ReelStats API every 5 minutes for campaign data
+- Polls the ReelStats API every POLL_INTERVAL_SECONDS (default 60s) as a
+  webhook fallback for campaign data
 - Sends view milestone alerts (250K, 500K, 1M, ...)
 - Flags creators for payment when deliverables are complete
 - Sends deadline reminders (3 days, 1 day, overdue) via Slack + email

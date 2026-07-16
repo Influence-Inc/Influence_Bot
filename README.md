@@ -12,7 +12,7 @@ INFLUENCE Bot automates the entire creator-brand content workflow:
 
 3. **Team Notifications & Alerts** — Real-time Slack alerts for new campaigns, video submissions, approvals, overdue deadlines, and daily campaign summaries every morning at 9 AM.
 
-4. **Instagram Stats** — Check any creator's follower count, engagement, and recent post performance directly from Slack.
+4. **View Milestone Alerts** — The bot polls the ReelStats campaign API (and consumes its webhooks) for creator view counts and posts a Slack alert each time a video crosses a milestone (250K, 500K, 1M, …).
 
 5. **Campaign Tracking** — Full lifecycle tracking: pending -> video submitted -> under review -> approved/changes requested -> posted.
 
@@ -20,22 +20,26 @@ INFLUENCE Bot automates the entire creator-brand content workflow:
 
 ```
 INFLUENCE Bot
-├── app.py                          # Main entry point (Flask + Slack Bolt)
+├── app.py                          # Main entry point (Flask + Slack Bolt); /webhook, /health, /slack/*
 ├── config.py                       # Environment variable configuration
 ├── bot/
-│   ├── handlers.py                 # Slack event handlers (mentions, messages)
-│   ├── commands.py                 # Slash commands (/influence-status, etc.)
-│   └── actions.py                  # Interactive actions (approve/reject buttons)
+│   ├── handlers.py                 # Slack event handlers (app_mention, message, team_join)
+│   ├── commands.py                 # Slash commands (/influence-status, /influence-check, …)
+│   ├── actions.py                  # Interactive actions (approve / request-changes / mark-as-paid)
+│   └── chat_routes.py              # Creator <-> brand chat-space HTTP routes
 ├── services/
-│   ├── email_service.py            # SMTP email sending (jennifer@useinfluence.xyz)
-│   ├── tally_service.py            # Tally webhook processing
-│   ├── instagram_service.py        # Instagram Graph API integration
-│   ├── approval_workflow.py        # Video review & approval flow
-│   └── scheduler_service.py        # Deadline monitoring & scheduled tasks
+│   ├── reelstats_api.py            # Polls GET /api/bot/campaigns on the consolidated container
+│   ├── webhook_handler.py          # Handles ReelStats webhook events (review/video-links submitted)
+│   ├── scheduler_service.py        # Poll loop + milestone/deliverable/deadline/upload checks
+│   ├── review_approval.py          # Shared approve / 24h auto-approval flow
+│   ├── email_service.py            # Resend HTTPS email sending (jennifer@useinfluence.xyz)
+│   ├── brand_routing.py            # Maps Slack workspaces <-> brands for per-brand notifications
+│   ├── slack_oauth.py              # Per-brand install links + OAuth callback
+│   └── chat_service.py             # Creator <-> brand chat spaces
 ├── models/
-│   └── models.py                   # Database models (Creator, Brand, Campaign, Video)
+│   └── models.py                   # SQLAlchemy models (installs, reviews, dedup + chat tables)
 ├── templates/
-│   ├── email_templates.py          # Professional email templates
+│   ├── email_templates.py          # Email templates
 │   └── slack_blocks.py             # Slack Block Kit message templates
 └── utils/
     └── helpers.py                  # Utility functions
@@ -74,10 +78,9 @@ Creator submits video via Tally
 | Service | Purpose | Link |
 |---------|---------|------|
 | **Slack** | Team notifications, brand approvals | Workspace `T09DSH6AEQH` |
-| **Tally** | Creator form submissions, video uploads | https://tally.so/dashboard |
-| **Email (SMTP)** | Follow-ups and approval notifications | `jennifer@useinfluence.xyz` |
-| **Instagram Graph API** | Creator stats and performance tracking | Meta Developer API |
-| **Campaign Website** | Campaign management | https://campaign.influence.technology/reve/reve-features |
+| **ReelStats API** | Campaign + creator data (polls `GET /api/bot/campaigns`; receives webhooks) | see `BOT_API.md` |
+| **Email (Resend)** | Follow-ups and approval notifications | `jennifer@useinfluence.xyz` |
+| **Campaign Website** | Campaign management + creator submissions | https://campaign.influence.technology |
 
 ## Setup
 
@@ -99,11 +102,12 @@ cp .env.example .env
 ```
 
 Required environment variables:
+- `BOT_TOKEN` — sent as `x-bot-token` when polling the ReelStats `/api/bot/*` API (must match the server's `BOT_TOKEN`)
+- `REELSTATS_API_URL` — base URL of the consolidated container (e.g. `https://campaign.influence.technology`)
 - `SLACK_BOT_TOKEN` — Slack Bot User OAuth Token (`xoxb-...`)
 - `SLACK_SIGNING_SECRET` — From Slack App settings
-- `SLACK_TEAM_CHANNEL_ID` — Channel for team notifications
-- `SMTP_PASSWORD` — App password for `jennifer@useinfluence.xyz`
-- `INSTAGRAM_ACCESS_TOKEN` — Meta Graph API token
+- `SLACK_CHANNEL_ID` — Fallback channel for notifications (per-type channels optional; see `config.py`)
+- `RESEND_API_KEY` — Resend HTTPS API key for `jennifer@useinfluence.xyz` (Railway blocks outbound SMTP)
 
 ### 3. Create Slack App
 
@@ -123,8 +127,8 @@ At https://api.slack.com/apps, create a new app with:
 
 **Slash Commands** (all point to `https://your-domain/slack/commands`):
 - `/influence-status`
-- `/influence-followup`
-- `/influence-stats`
+- `/influence-check`
+- `/influence-install`
 - `/influence-help`
 
 **Interactivity** (Request URL: `https://your-domain/slack/actions`)
@@ -145,7 +149,7 @@ supported server.
 **One-time setup:**
 
 1. **Create project.** Railway dashboard → *New Project* → *Deploy from
-   GitHub repo* → pick `AkShadoww/Influence_Bot` → select the deploy
+   GitHub repo* → pick `Influence-Inc/Influence_Bot` → select the deploy
    branch.
 
 2. **Add a Volume for SQLite.** Service → *Settings* → *Volumes* → *New
@@ -162,7 +166,8 @@ supported server.
    | `SLACK_BOT_TOKEN` | `xoxb-…` |
    | `SLACK_SIGNING_SECRET` | from Slack app |
    | `SLACK_CHANNEL_ID` | e.g. `C0XXXXXXXXX` |
-   | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `EMAIL_FROM_NAME` | Jennifer's SMTP creds |
+   | `RESEND_API_KEY` | Resend HTTPS API key (domains verified on the Resend account) |
+   | `EMAIL_FROM_ADDRESS` / `EMAIL_FROM_NAME` | e.g. `jennifer@useinfluence.xyz` / `Jennifer - INFLUENCE` *(optional; sensible defaults)* |
    | `DATABASE_URL` | `sqlite:////data/influence_bot.db` *(four slashes)* |
    | `POLL_INTERVAL_SECONDS` | `60` *(optional)* |
    | `TEST_CAMPAIGN_NAME` | `Dummy testing` *(optional, while testing)* |
@@ -261,14 +266,15 @@ Hitting that route 302s the brand to Slack's consent screen.
 
 | Command | Description |
 |---------|-------------|
-| `/influence-status` | View all active campaign statuses |
-| `/influence-followup` | Manually trigger overdue campaign checks |
-| `/influence-stats <handle>` | Check a creator's Instagram stats |
+| `/influence-status` | View active campaign statuses (brand workspaces see only their own brand) |
+| `/influence-check` | Manually run all notification checks — milestones, deliverables, deadlines, uploads (admin only) |
+| `/influence-install <brand>` | Generate a per-brand Slack install link (admin only) |
 | `/influence-help` | Show all available commands |
 
 ## Automated Features
 
-- **Hourly deadline checks** — Scans for overdue campaigns and sends follow-up emails
-- **Daily summary at 9 AM** — Posts campaign overview to team channel
-- **Escalating follow-ups** — 1st reminder (friendly) -> 2nd reminder (nudge) -> 3rd (urgent)
-- **Real-time Slack alerts** — New campaigns, video submissions, approvals, overdue notices
+- **Poll-loop checks** — Every `POLL_INTERVAL_SECONDS` (default 60s) the bot re-fetches `GET /api/bot/campaigns` and runs milestone, deliverables-complete, deadline, and upload-follow-up checks (idempotent via per-alert dedup tables)
+- **Daily summary at 9 AM** — Posts a payment-readiness overview to the payments channel
+- **Escalating deadline reminders** — 3 days before -> 1 day before -> overdue, via Slack + email
+- **Real-time webhook alerts** — Review submissions, video-link submissions, approvals (poll is the safety-net fallback)
+- **24h review auto-approval** — Sweeps every 30 min to auto-approve reviews left un-actioned for 24h
