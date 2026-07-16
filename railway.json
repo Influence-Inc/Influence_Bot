@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "gunicorn --workers 1 --threads 64 --worker-class gthread --timeout 60 --bind 0.0.0.0:$PORT app:flask_app",
+    "startCommand": "gunicorn --workers 1 --threads 64 --worker-class gthread --timeout 60 --bind \"${BIND_ADDR:-0.0.0.0:$PORT}\" app:flask_app",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
