@@ -360,3 +360,47 @@ until step G.
 When every item above is green and the soak period has passed, the four
 repositories are communicating over private networking and the unified project is
 fully operational; the old project can be decommissioned.
+
+---
+
+## 8. IPv6 private networking — `BIND_ADDR` / `HOST` (added after IPv6 audit)
+
+**Why this exists.** Railway's private network is **IPv6-only**:
+`<service>.railway.internal` resolves to an IPv6 (AAAA) address. A service can
+only *receive* private-network traffic if its HTTP server **listens on IPv6
+(`::`)**. Two services in this system bind IPv4-only by default and are
+*receivers* on an internal hop, so they must be switched to IPv6 to accept
+private calls:
+
+| Service | Internal hop it receives | Default bind | IPv6 opt-in |
+| --- | --- | --- | --- |
+| `influence-bot` | `stats → bot` `POST /webhook` (`SLACK_WEBHOOK_URL`) | `0.0.0.0:$PORT` | set `BIND_ADDR=[::]:${{PORT}}` |
+| `creator-database` | `outreach → creator-db` (`x-api-key`) | `0.0.0.0` | set `HOST=::` |
+
+`influence-stats` and `outreach` already bind dual-stack (`app.listen(PORT)` with
+no host → Node binds `::`), so they need no change.
+
+**What changed (default-preserving, reversible).**
+- `influence-bot` `Procfile` + `railway.json` now bind
+  `"${BIND_ADDR:-0.0.0.0:$PORT}"`. With `BIND_ADDR` unset the value is exactly
+  `0.0.0.0:$PORT` (today's behavior); set `BIND_ADDR=[::]:${{PORT}}` in the new
+  project to listen on IPv6. `--workers 1` is unchanged.
+- `creator-database` `src/main.ts` now reads `HOST` (`process.env.HOST ?? '0.0.0.0'`);
+  set `HOST=::` in the new project.
+
+Both are **[service-specific]** variables (not shared).
+
+**Validation gate before cutover (do NOT skip).** Deploy the two services in the
+NEW (non-live) project with the IPv6 values set, then confirm BOTH:
+1. **Public still works** — hit the bot's public health/Slack URL and load a
+   creator-db public route; a `::`-bound server must still be reachable through
+   Railway's public edge.
+2. **Private works** — from a peer service shell (or by watching logs) confirm
+   `stats → bot /webhook` and `outreach → creator-db` succeed over
+   `*.railway.internal`.
+
+**Rollback.** Unset `BIND_ADDR` (bot) / `HOST` (creator-db) → the service reverts
+to the IPv4 `0.0.0.0` bind on next deploy. If Railway's public edge on your tier
+cannot reach a `::`-bound app, leave these unset and instead point the two hops'
+client variables (stats `SLACK_WEBHOOK_URL`, outreach `CREATOR_DB_URL`) at the
+receiver's **public domain** — still secured by the shared token / `x-api-key`.
