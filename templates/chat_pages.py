@@ -5,7 +5,6 @@ Kept as Jinja strings to match the existing inline-HTML pattern used by
 `/slack/oauth_redirect`. Pages:
   - chat_page: the actual chat view (creator + brand)
   - admin_login_page: simple admin-token gate
-  - admin_dashboard: list of chat spaces
   - admin_chat_page: read-only admin view of one chat
   - error_page: shared error template
 """
@@ -684,112 +683,13 @@ button { width:100%; padding:12px; background:#111827; color:#fff; border:0; bor
 <h2 style="margin:0 0 12px">INFLUENCE Chat Admin</h2>
 <form method="POST" action="/admin/chats/login">
   <input type="password" name="token" placeholder="Admin token" required>
+  {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
   <button type="submit">Enter</button>
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
 </form></div></body></html>
 """
 
 
-ADMIN_DASHBOARD = """\
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Chat spaces — INFLUENCE Admin</title>
-<style>
-body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5f7; margin:0; }
-.container { max-width:1100px; margin:0 auto; padding:24px; box-sizing:border-box; }
-h1 { font-size:20px; margin:0 0 16px; }
-.stats { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:16px; }
-.stat { background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; }
-.stat .v { font-size:22px; font-weight:600; }
-.stat .l { font-size:12px; color:#6b7280; text-transform:uppercase; letter-spacing:.05em; }
-.panel { background:#fff; border:1px solid #e5e5ea; padding:14px 16px; border-radius:10px; margin-bottom:16px; }
-.panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:#6b7280; margin:0 0 8px; font-weight:500; }
-.panel ol { margin:0; padding-left:18px; font-size:13px; color:#1f2937; }
-.panel li + li { margin-top:4px; }
-form.search { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-form.search input, form.search select { padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; box-sizing:border-box; }
-form.search input[type=text] { min-width:240px; flex:1; }
-form.search button { padding:8px 14px; border-radius:8px; border:1px solid #111827; background:#111827; color:#fff; font-size:13px; cursor:pointer; }
-.chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
-.chips a { font-size:12px; padding:6px 12px; border-radius:14px; background:#fff; border:1px solid #d1d5db; color:#1f2937; text-decoration:none; }
-.chips a.on { background:#111827; color:#fff; border-color:#111827; }
-.table-wrap { background:#fff; border:1px solid #e5e5ea; border-radius:10px; overflow-x:auto; -webkit-overflow-scrolling:touch; }
-table { width:100%; min-width:640px; background:#fff; border-collapse:separate; border-spacing:0; }
-th, td { text-align:left; padding:10px 12px; font-size:13px; border-bottom:1px solid #f1f1f3; }
-th { background:#f9fafb; font-weight:500; color:#6b7280; white-space:nowrap; }
-tr:last-child td { border-bottom:0; }
-a.row { color:#1d4ed8; text-decoration:none; white-space:nowrap; }
-.tag { display:inline-block; font-size:11px; padding:2px 8px; border-radius:10px; }
-.tag.active { background:#dcfce7; color:#166534; }
-.tag.archived { background:#fee2e2; color:#991b1b; }
-.tag.approved { background:#dbeafe; color:#1e3a8a; }
-@media (max-width: 900px) {
-  .stats { grid-template-columns:repeat(3,1fr); }
-}
-@media (max-width: 640px) {
-  .container { padding:14px; }
-  h1 { font-size:18px; margin-bottom:12px; }
-  .stats { grid-template-columns:repeat(2,1fr); gap:8px; }
-  .stat { padding:10px 12px; }
-  .stat .v { font-size:18px; }
-  .stat .l { font-size:11px; }
-  .panel { padding:12px; }
-  form.search input[type=text] { min-width:0; width:100%; }
-  th, td { padding:8px 10px; font-size:12px; }
-}
-</style></head><body>
-<div class="container">
-<h1>Chat spaces</h1>
-<div class="stats">
-  <div class="stat"><div class="v">{{ stats.active }}</div><div class="l">Active</div></div>
-  <div class="stat"><div class="v">{{ stats.approved }}</div><div class="l">Approved</div></div>
-  <div class="stat"><div class="v">{{ stats.archived }}</div><div class="l">Archived</div></div>
-  <div class="stat"><div class="v">{{ stats.active_creators }}</div><div class="l">Active creators</div></div>
-  <div class="stat"><div class="v">{{ stats.recently_active }}</div><div class="l">Active 7d</div></div>
-</div>
-{% if stats.top_revisions %}
-<div class="panel">
-  <h2>Campaigns with most revisions</h2>
-  <ol>
-  {% for r in stats.top_revisions %}
-    <li>{{ r.campaign_name or '—' }}{% if r.brand_name %} <span style="color:#6b7280">· {{ r.brand_name }}</span>{% endif %} — <b>{{ r.revisions }}</b></li>
-  {% endfor %}
-  </ol>
-</div>
-{% endif %}
-<form class="search" method="GET">
-  <input type="text" name="q" value="{{ query.q or '' }}" placeholder="Search creator / campaign / brand…">
-  <input type="text" name="brand" value="{{ query.brand or '' }}" placeholder="Brand exact match (optional)">
-  <button type="submit">Filter</button>
-  {% if query.q or query.brand or query.status %}
-    <a href="/admin/chats" style="padding:8px 10px;color:#6b7280;text-decoration:none">Clear</a>
-  {% endif %}
-</form>
-<div class="chips">
-  <a href="/admin/chats" class="{% if not query.status %}on{% endif %}">All</a>
-  <a href="/admin/chats?status=active" class="{% if query.status == 'active' %}on{% endif %}">Active</a>
-  <a href="/admin/chats?status=approved" class="{% if query.status == 'approved' %}on{% endif %}">Approved</a>
-  <a href="/admin/chats?status=archived" class="{% if query.status == 'archived' %}on{% endif %}">Archived</a>
-</div>
-<div class="table-wrap">
-<table>
-<thead><tr><th>Creator</th><th>Campaign</th><th>Brand</th><th>Status</th><th>Last message</th><th></th></tr></thead>
-<tbody>
-{% for s in spaces %}
-<tr>
-  <td>@{{ s.creator_username }}{% if s.creator_email %}<br><span style="color:#6b7280;font-size:11px">{{ s.creator_email }}</span>{% endif %}</td>
-  <td>{{ s.campaign_name or '—' }}</td>
-  <td>{{ s.brand_name or '—' }}</td>
-  <td><span class="tag {{ s.status }}">{{ s.status }}</span></td>
-  <td>{{ s.last_message_at.strftime('%Y-%m-%d %H:%M') if s.last_message_at else '—' }}</td>
-  <td><a class="row" href="/admin/chats/{{ s.id }}">Open →</a></td>
-</tr>
-{% endfor %}
-{% if not spaces %}<tr><td colspan="6" style="text-align:center;color:#6b7280;padding:24px">No chat spaces.</td></tr>{% endif %}
-</tbody>
-</table>
-</div>
-</div></body></html>
-"""
 
 
 ADMIN_CHAT_PAGE = """\
@@ -831,7 +731,7 @@ h1 { font-size:18px; margin:0 0 4px; word-wrap:break-word; }
 }
 </style></head><body>
 <div class="container">
-<div class="crumbs"><a href="/admin/chats">← All chat spaces</a></div>
+<div class="crumbs"><a href="/admin/chats">← Campaign dashboard</a></div>
 <h1>{{ title }}</h1>
 <div class="meta">Campaign {{ space.campaign_name or '—' }} · Brand {{ space.brand_name or '—' }} · Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} · status: {{ space.status }} · created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
 

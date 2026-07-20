@@ -230,6 +230,43 @@ def find_by_slug(public_slug: str) -> Optional[ChatSpace]:
         db.close()
 
 
+def find_for_campaign_creator(
+    *, campaign_slug: Optional[str], creator_username: Optional[str]
+) -> Optional[ChatSpace]:
+    """Resolve a creator's chat space from the campaign slug + Instagram
+    username — the identifiers the campaign dashboard already has. Prefers a
+    still-open (non-archived) space and, among those, the most recently active.
+    Matches the username case-insensitively; an exact (non-LIKE) comparison so
+    underscores in handles aren't treated as wildcards."""
+    from sqlalchemy import func
+
+    campaign_slug = (campaign_slug or "").strip()
+    creator_username = (creator_username or "").strip().lstrip("@")
+    if not campaign_slug or not creator_username:
+        return None
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(ChatSpace)
+            .filter(
+                ChatSpace.campaign_slug == campaign_slug,
+                func.lower(ChatSpace.creator_username) == creator_username.lower(),
+            )
+            .order_by(
+                (ChatSpace.status == "archived"),  # active/approved sort before archived
+                ChatSpace.last_message_at.desc().nullslast(),
+                ChatSpace.created_at.desc(),
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        db.expunge(row)
+        return row
+    finally:
+        db.close()
+
+
 def _generate_public_slug(db, *, max_attempts: int = 8) -> str:
     """
     URL-safe random slug (12 chars from secrets.token_urlsafe). 72 bits of
@@ -690,105 +727,6 @@ def archive_for_campaign(
         if archive_space(sid):
             archived += 1
     return archived
-
-
-# ---------------------------------------------------------------------------
-# Admin listing
-# ---------------------------------------------------------------------------
-
-def list_spaces_for_admin(
-    *,
-    status: Optional[str] = None,
-    search: Optional[str] = None,
-    brand: Optional[str] = None,
-    limit: int = 200,
-) -> list[dict]:
-    db = SessionLocal()
-    try:
-        q = db.query(ChatSpace)
-        if status:
-            q = q.filter(ChatSpace.status == status)
-        if brand:
-            q = q.filter(ChatSpace.brand_name == brand)
-        if search:
-            like = f"%{search}%"
-            q = q.filter(
-                (ChatSpace.creator_username.ilike(like))
-                | (ChatSpace.creator_email.ilike(like))
-                | (ChatSpace.campaign_name.ilike(like))
-                | (ChatSpace.brand_name.ilike(like))
-            )
-        q = q.order_by(ChatSpace.last_message_at.desc().nullslast(), ChatSpace.created_at.desc())
-        rows = q.limit(limit).all()
-        out = []
-        for r in rows:
-            out.append({
-                "id": r.id,
-                "creator_username": r.creator_username,
-                "creator_email": r.creator_email,
-                "campaign_name": r.campaign_name,
-                "brand_name": r.brand_name,
-                "status": r.status,
-                "created_at": r.created_at,
-                "last_message_at": r.last_message_at,
-            })
-        return out
-    finally:
-        db.close()
-
-
-def admin_stats() -> dict:
-    """Headline counts + top-revisions-per-campaign for the dashboard."""
-    from datetime import timedelta
-    from sqlalchemy import func
-
-    db = SessionLocal()
-    try:
-        active = db.query(ChatSpace).filter(ChatSpace.status == "active").count()
-        approved = db.query(ChatSpace).filter(ChatSpace.status == "approved").count()
-        archived = db.query(ChatSpace).filter(ChatSpace.status == "archived").count()
-        creators = (
-            db.query(ChatSpace.creator_username)
-            .filter(ChatSpace.status == "active")
-            .distinct()
-            .count()
-        )
-
-        week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-        recently_active = (
-            db.query(ChatSpace)
-            .filter(ChatSpace.last_message_at >= week_ago)
-            .count()
-        )
-
-        # Top campaigns by number of changes_requested decisions.
-        revisions_rows = (
-            db.query(
-                ReviewSubmission.campaign_name,
-                ReviewSubmission.brand_name,
-                func.count(ReviewSubmission.id).label("n"),
-            )
-            .filter(ReviewSubmission.decision == "changes_requested")
-            .group_by(ReviewSubmission.campaign_name, ReviewSubmission.brand_name)
-            .order_by(func.count(ReviewSubmission.id).desc())
-            .limit(5)
-            .all()
-        )
-        top_revisions = [
-            {"campaign_name": r[0], "brand_name": r[1], "revisions": r[2]}
-            for r in revisions_rows
-        ]
-
-        return {
-            "active": active,
-            "approved": approved,
-            "archived": archived,
-            "active_creators": creators,
-            "recently_active": recently_active,
-            "top_revisions": top_revisions,
-        }
-    finally:
-        db.close()
 
 
 def export_transcript(chat_space_id: int) -> Optional[dict]:
