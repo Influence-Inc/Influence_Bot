@@ -48,7 +48,6 @@ from services.chat_service import (
 )
 from templates.chat_pages import (
     ADMIN_CHAT_PAGE,
-    ADMIN_DASHBOARD,
     ADMIN_LOGIN_PAGE,
     CHAT_PAGE,
     ERROR_PAGE,
@@ -87,6 +86,27 @@ def _is_admin() -> bool:
         return False
     except Exception:
         return False
+
+
+def _campaign_dashboard_url() -> str:
+    """The Influence campaign dashboard (influence-stats). Individual creator
+    chats are now reached from there via the per-creator 'Open chat' link, so
+    the old standalone chat dashboard redirects here."""
+    return (Config.REELSTATS_API_URL or "https://campaign.influence.technology").rstrip("/")
+
+
+def _safe_next(raw: str | None) -> str | None:
+    """Only allow same-site absolute paths as a post-login redirect target, so
+    the `next` param can't be used as an open redirect."""
+    raw = (raw or "").strip()
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return None
+
+
+def _login_response(next_url: str = "", error=None, status: int = 200) -> Response:
+    html = render_template_string(ADMIN_LOGIN_PAGE, error=error, next_url=next_url or "")
+    return Response(html, mimetype="text/html", status=status)
 
 
 def _format_chat_space_title(space) -> str:
@@ -505,40 +525,60 @@ def chat_attachment(attachment_id: int):
 # ---------------------------------------------------------------------------
 
 @bp.route("/admin/chats", methods=["GET"])
-def admin_chats_list():
+def admin_chats_root():
+    # The standalone chat dashboard has been removed — creator chats are now
+    # reached from the campaign dashboard's per-creator "Open chat" link. Keep
+    # this route so existing bookmarks and the post-login redirect still work:
+    # signed-in admins are forwarded to the campaign dashboard.
     if not _is_admin():
-        html = render_template_string(ADMIN_LOGIN_PAGE, error=None)
-        return Response(html, mimetype="text/html")
+        return _login_response()
+    return make_response("", 302, {"Location": _campaign_dashboard_url()})
 
-    q = (request.args.get("q") or "").strip() or None
-    status = (request.args.get("status") or "").strip() or None
-    brand = (request.args.get("brand") or "").strip() or None
-    spaces = chat_service.list_spaces_for_admin(status=status, search=q, brand=brand)
-    stats = chat_service.admin_stats()
-    html = render_template_string(
-        ADMIN_DASHBOARD,
-        spaces=spaces,
-        stats=stats,
-        query={"q": q, "status": status, "brand": brand},
+
+@bp.route("/admin/chats/by-creator", methods=["GET"])
+def admin_chat_by_creator():
+    """Resolve a creator's chat from campaign slug + username (the identifiers
+    the campaign dashboard already has) and forward to the admin chat view.
+    This is the target of the dashboard's per-creator "Open chat" link."""
+    if not _is_admin():
+        return _login_response(next_url=request.full_path)
+    campaign = (request.args.get("campaign") or "").strip()
+    creator = (request.args.get("creator") or "").strip().lstrip("@")
+    if not campaign or not creator:
+        return _error_response(
+            "Missing details",
+            "This chat link is missing the campaign or creator. Open it again "
+            "from the campaign dashboard.",
+            status=400,
+        )
+    space = chat_service.find_for_campaign_creator(
+        campaign_slug=campaign, creator_username=creator
     )
-    return Response(html, mimetype="text/html")
+    if space is None:
+        return _error_response(
+            "No chat yet",
+            f"There's no chat space for @{creator} yet. A chat opens "
+            "automatically once the creator submits a video for review.",
+            status=404,
+        )
+    return make_response("", 302, {"Location": f"/admin/chats/{space.id}"})
 
 
 @bp.route("/admin/chats/login", methods=["POST"])
 def admin_chats_login():
     token = (request.form.get("token") or "").strip()
+    next_url = _safe_next(request.form.get("next")) or ""
     expected = Config.CHAT_ADMIN_TOKEN
     if not expected:
-        html = render_template_string(
-            ADMIN_LOGIN_PAGE,
+        return _login_response(
+            next_url=next_url,
             error="CHAT_ADMIN_TOKEN is not configured on the server.",
+            status=503,
         )
-        return Response(html, mimetype="text/html", status=503)
     if not token or token != expected:
-        html = render_template_string(ADMIN_LOGIN_PAGE, error="Invalid token.")
-        return Response(html, mimetype="text/html", status=401)
+        return _login_response(next_url=next_url, error="Invalid token.", status=401)
     cookie_value = _admin_serializer().dumps({"a": 1, "iat": int(time.time())})
-    resp = make_response("", 302, {"Location": "/admin/chats"})
+    resp = make_response("", 302, {"Location": next_url or "/admin/chats"})
     resp.set_cookie(
         ADMIN_COOKIE, cookie_value,
         max_age=Config.CHAT_SESSION_TTL,
@@ -550,10 +590,7 @@ def admin_chats_login():
 @bp.route("/admin/chats/<int:space_id>", methods=["GET"])
 def admin_chat_view(space_id: int):
     if not _is_admin():
-        return Response(
-            render_template_string(ADMIN_LOGIN_PAGE, error=None),
-            mimetype="text/html",
-        )
+        return _login_response(next_url=request.path)
     space = find_by_id(space_id)
     if space is None:
         return _error_response("Not found", "Chat space not found.", status=404)
