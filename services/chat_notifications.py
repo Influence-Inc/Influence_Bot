@@ -80,11 +80,39 @@ def _load_space(chat_space_id: int) -> Optional[ChatSpace]:
         db.close()
 
 
+def _anchor_admin_slack(space_id: int, channel: Optional[str], ts: Optional[str]) -> None:
+    """Persist the first INFLUENCE-team ping's (channel, ts) so later
+    creator/brand messages thread underneath it. Best-effort."""
+    if not ts:
+        return
+    db = SessionLocal()
+    try:
+        space = db.query(ChatSpace).get(space_id)
+        if space is None:
+            return
+        if channel:
+            space.admin_slack_channel = channel
+        space.admin_slack_ts = ts
+        db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Could not anchor chat_space %s to admin message ts=%s: %s",
+            space_id, ts, exc,
+        )
+    finally:
+        db.close()
+
+
 def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) -> None:
     """
     Slack-ping the INFLUENCE team channel (#content-reviews) so Jennifer's
     team is kept in the loop on creator <-> brand chat activity. This is what
     makes the composer's "… and Jennifer will be notified" hint truthful.
+
+    The first ping for a chat space anchors a thread (admin_slack_channel /
+    admin_slack_ts); every later creator/brand message on that space replies
+    in-thread instead of posting a fresh top-level message.
+
     Best-effort; never raises.
     """
     if not Config.SLACK_BOT_TOKEN or not Config.SLACK_CHANNEL_REVIEWS:
@@ -92,6 +120,7 @@ def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) 
     admin_url = ""
     if Config.PUBLIC_BASE_URL:
         admin_url = f"{Config.PUBLIC_BASE_URL}/admin/chats/{space.id}"
+    channel = space.admin_slack_channel or Config.SLACK_CHANNEL_REVIEWS
     try:
         blocks = build_chat_influence_ping_blocks(
             creator_username=space.creator_username,
@@ -101,14 +130,17 @@ def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) 
             preview=preview,
             admin_url=admin_url,
         )
-        WebClient(token=Config.SLACK_BOT_TOKEN).chat_postMessage(
-            channel=Config.SLACK_CHANNEL_REVIEWS,
+        response = WebClient(token=Config.SLACK_BOT_TOKEN).chat_postMessage(
+            channel=channel,
             text=(
                 f"New chat message from {sender_name} — "
                 f"{space.brand_name or 'brand'} × @{space.creator_username}"
             ),
             blocks=blocks,
+            thread_ts=space.admin_slack_ts or None,
         )
+        if not space.admin_slack_ts and response.get("ok"):
+            _anchor_admin_slack(space.id, response.get("channel"), response.get("ts"))
     except SlackApiError as exc:
         err = exc.response.get("error") if exc.response else str(exc)
         logger.warning("INFLUENCE-team chat ping failed: %s", err)
