@@ -40,6 +40,7 @@ def init_db():
     _migrate_milestone_alerts_video_id()
     _migrate_chat_spaces_public_slug()
     _migrate_chat_spaces_creator_invited_at()
+    _migrate_chat_spaces_admin_slack_ts()
     _migrate_review_submissions_submit_posts_url()
 
 
@@ -69,6 +70,23 @@ def _migrate_chat_spaces_creator_invited_at():
         conn.execute(text(
             "ALTER TABLE chat_spaces ADD COLUMN creator_invited_at TIMESTAMP"
         ))
+
+
+def _migrate_chat_spaces_admin_slack_ts():
+    """Add `admin_slack_channel`/`admin_slack_ts` to `chat_spaces` on pre-column deploys."""
+    inspector = inspect(engine)
+    if "chat_spaces" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("chat_spaces")}
+    with engine.begin() as conn:
+        if "admin_slack_channel" not in cols:
+            conn.execute(text(
+                "ALTER TABLE chat_spaces ADD COLUMN admin_slack_channel VARCHAR(255)"
+            ))
+        if "admin_slack_ts" not in cols:
+            conn.execute(text(
+                "ALTER TABLE chat_spaces ADD COLUMN admin_slack_ts VARCHAR(255)"
+            ))
 
 
 def _migrate_chat_spaces_public_slug():
@@ -436,6 +454,12 @@ class ChatSpace(Base):
     # so we can chat_update it / post follow-ups in the same channel.
     brand_slack_channel = Column(String(255), nullable=True)
     brand_slack_ts = Column(String(255), nullable=True)
+
+    # Track the first INFLUENCE-team (#content-reviews) ping for this chat
+    # space, so later creator/brand messages thread underneath it instead of
+    # posting a fresh top-level message each time.
+    admin_slack_channel = Column(String(255), nullable=True)
+    admin_slack_ts = Column(String(255), nullable=True)
 
     members = relationship("ChatMember", back_populates="space", cascade="all, delete-orphan")
     messages = relationship("ChatMessage", back_populates="space", cascade="all, delete-orphan")
