@@ -235,6 +235,16 @@ class WebhookHandler:
             # records the decision + emails the creator.
             brand_chat_url, chat_space_id = self._build_brand_chat_url(review_id)
 
+            # The admin (#content-reviews) copy gets an "Open as Admin" button
+            # into the admin side of the same chat space instead of a Request
+            # Changes button — the INFLUENCE team enters as admins, not the
+            # brand.
+            admin_chat_url = None
+            if Config.PUBLIC_BASE_URL and chat_space_id:
+                admin_chat_url = (
+                    f"{Config.PUBLIC_BASE_URL.rstrip('/')}/admin/chats/{chat_space_id}"
+                )
+
             admin_blocks = build_review_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
@@ -243,7 +253,7 @@ class WebhookHandler:
                 notes=notes,
                 review_id=review_id,
                 show_meta=True,
-                chat_url=brand_chat_url,
+                admin_chat_url=admin_chat_url,
             )
             text = f"New review submitted by @{username} for {campaign_name}"
 
