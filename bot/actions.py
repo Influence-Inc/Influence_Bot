@@ -6,15 +6,18 @@ Handles button clicks on notification messages.
 import logging
 from datetime import datetime, timezone
 
+from slack_sdk import WebClient
 from sqlalchemy.exc import IntegrityError
 
 from models.models import (
     PaymentRecord,
     ReviewSubmission,
     SessionLocal,
+    SlackInstallation,
 )
 from services import chat_service
 from services.review_approval import approve_review_core
+from templates.slack_blocks import build_review_submitted_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +29,80 @@ def _strip_review_action_buttons(blocks: list[dict], review_id: int) -> list[dic
         b for b in blocks
         if not (b.get("type") == "actions" and b.get("block_id") == target_block_id)
     ]
+
+
+def _mark_brand_review_approved(review_id: int) -> None:
+    """
+    Reflect an INFLUENCE (admin) workspace approval on the brand's own copy of
+    the review message.
+
+    When the INFLUENCE team clicks Approve in our workspace, the brand still
+    sees a live Approve / Request Changes message in their workspace. This
+    rebuilds that message with the action buttons removed and an
+    "Approved by the INFLUENCE team" footer — deliberately without naming the
+    approver. Best-effort; never raises.
+    """
+    space = chat_service.find_by_review_id(review_id)
+    if space is None or not space.brand_slack_ts or not space.brand_slack_channel:
+        return
+    if not space.brand_install_id:
+        return
+
+    db = SessionLocal()
+    try:
+        install = db.query(SlackInstallation).get(space.brand_install_id)
+        review = db.query(ReviewSubmission).get(review_id)
+        if install is None or not install.bot_token or review is None:
+            return
+        bot_token = install.bot_token
+        creator_username = review.creator_username
+        campaign_name = review.campaign_name or ""
+        brand_name = review.brand_name or ""
+        video_link = review.video_link or ""
+        notes = review.notes or ""
+    finally:
+        db.close()
+
+    # Rebuild the brand-side card without any action buttons (review_id=None),
+    # then append the approval footer.
+    blocks = build_review_submitted_blocks(
+        creator_username=creator_username,
+        campaign_name=campaign_name,
+        brand_name=brand_name,
+        video_link=video_link,
+        notes=notes,
+        review_id=None,
+        show_meta=False,
+    )
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f":white_check_mark: *Approved by the INFLUENCE team* — "
+                        f"@{creator_username} ({timestamp})"
+                    ),
+                }
+            ],
+        }
+    )
+
+    try:
+        WebClient(token=bot_token).chat_update(
+            channel=space.brand_slack_channel,
+            ts=space.brand_slack_ts,
+            text=f"Review approved for @{creator_username}",
+            blocks=blocks,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not update brand review message on admin approval "
+            "(review_id=%s): %s",
+            review_id, exc,
+        )
 
 
 def register_actions(app):
@@ -176,6 +253,10 @@ def register_actions(app):
                 )
                 return
             creator_username = row.creator_username
+            # Slack coordinates of the admin (#content-reviews) copy, captured
+            # when it was posted. Used below to tell whether this click came
+            # from the admin workspace vs. the brand's own copy.
+            admin_slack_ts = row.slack_ts
         finally:
             db.close()
 
@@ -220,6 +301,22 @@ def register_actions(app):
                 )
             except Exception as e:
                 logger.error(f"Failed to update message after review_approve: {e}")
+
+        # If the approval came from the INFLUENCE (admin) workspace copy,
+        # mirror it onto the brand's own copy: strip their buttons and show
+        # that the INFLUENCE team approved (without naming the approver). A
+        # brand-side approval already updates the brand copy in place above,
+        # so only do this for admin-originated clicks.
+        clicked_from_admin = bool(ts and admin_slack_ts and ts == admin_slack_ts)
+        if clicked_from_admin:
+            try:
+                _mark_brand_review_approved(review_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to mirror admin approval to brand workspace "
+                    "(review_id=%s): %s",
+                    review_id, exc,
+                )
 
     # ------------------------------------------------------------------
     # Review: Request Changes

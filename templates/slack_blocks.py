@@ -281,6 +281,7 @@ def build_review_submitted_blocks(
     review_id: int | None = None,
     show_meta: bool = False,
     chat_url: str | None = None,
+    admin_chat_url: str | None = None,
 ) -> list[dict]:
     """
     Webhook event: creator submitted a video for review.
@@ -294,6 +295,13 @@ def build_review_submitted_blocks(
     as a URL — clicking the button opens the brand's chat space in a
     browser AND fires the action handler on our backend simultaneously
     (Slack delivers both when a button has both `url` and `action_id`).
+
+    `admin_chat_url` switches the secondary button from "Request Changes"
+    to an "Open as Admin" link that opens the admin side of the chat space
+    (``/admin/chats/<id>``). Used for the INFLUENCE (admin) workspace, where
+    the team enters the chat as admins rather than requesting changes as the
+    brand. It's a plain link button (no action_id), so it only navigates —
+    it doesn't record a decision or email the creator.
     """
     body_lines = [":video_camera: *Content to be reviewed*", ""]
     if show_meta:
@@ -322,14 +330,25 @@ def build_review_submitted_blocks(
     ]
 
     if review_id is not None:
-        request_changes_btn = {
-            "type": "button",
-            "action_id": "review_request_changes",
-            "text": {"type": "plain_text", "text": "Request Changes"},
-            "value": str(review_id),
-        }
-        if chat_url:
-            request_changes_btn["url"] = chat_url
+        if admin_chat_url:
+            # INFLUENCE (admin) workspace: a plain link into the admin side of
+            # the chat space. No action_id — it only navigates.
+            secondary_btn = {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Open as Admin"},
+                "url": admin_chat_url,
+            }
+        else:
+            # Brand workspace: the hybrid Request Changes button (url +
+            # action_id) that opens the brand chat AND records the decision.
+            secondary_btn = {
+                "type": "button",
+                "action_id": "review_request_changes",
+                "text": {"type": "plain_text", "text": "Request Changes"},
+                "value": str(review_id),
+            }
+            if chat_url:
+                secondary_btn["url"] = chat_url
         blocks.append(
             {
                 "type": "actions",
@@ -342,7 +361,7 @@ def build_review_submitted_blocks(
                         "text": {"type": "plain_text", "text": "Approve"},
                         "value": str(review_id),
                     },
-                    request_changes_btn,
+                    secondary_btn,
                 ],
             }
         )
