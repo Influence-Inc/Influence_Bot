@@ -173,6 +173,28 @@ def _migrate_milestone_alerts_video_id():
             ))
 
 
+class AppState(Base):
+    """
+    Small key/value store for app-level flags.
+
+    Used for the notification "baseline" watermark: after a deploy the dedup
+    tables may be empty (SQLite lives on Railway's ephemeral filesystem, so
+    every redeploy starts fresh). Before running any live checks we record the
+    current state silently and set `notification_baseline_done=done` here, so
+    pre-existing milestones/deadlines/deliverables aren't re-announced. On a
+    persistent database this flag survives, so the baseline runs exactly once.
+    """
+    __tablename__ = "app_state"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(String(255), nullable=True)
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class MilestoneAlert(Base):
     """
     Tracks which view milestones have been notified to avoid duplicates.
