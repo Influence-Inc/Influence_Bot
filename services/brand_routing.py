@@ -9,10 +9,22 @@ Matching strategy
 -----------------
 The install slug (`SlackInstallation.brand`) is set from the path segment in
 the install URL (e.g. ``/slack/install/influuu``). The ReelStats API returns
-brand names like ``"Influuu"`` or ``"Influuu, Inc"``. We compare them after
-lowercasing and stripping non-alphanumeric characters, against either the
-install slug or the workspace name Slack returned during OAuth — whichever
-hits first.
+brand names like ``"Influuu"`` or ``"Influuu, Inc"``. We compare them against
+either the install slug or the workspace name Slack returned during OAuth.
+
+Matching is intentionally forgiving so a workspace whose name carries extra
+words still receives its brand's notifications:
+
+1. **Exact match** — after lowercasing and stripping non-alphanumeric
+   characters, the brand name equals the install slug or the workspace name.
+2. **Token-prefix match** — the brand name forms the leading whole word(s) of
+   the slug or workspace name (or vice-versa). This is what makes a campaign
+   for brand ``"Reve"`` reach a workspace named ``"REVE AI"``. Matching is
+   word-boundary aware, so ``"Reve"`` never matches ``"Revel"`` or
+   ``"Revenue"``.
+
+Exact matches always win over prefix matches, so a workspace named exactly for
+its brand is never shadowed by a looser prefix hit on another install.
 """
 
 from __future__ import annotations
@@ -35,6 +47,49 @@ def _normalize(value: Optional[str]) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
+def _tokens(value: Optional[str]) -> list[str]:
+    """Split a name into lowercase alphanumeric words (e.g. "REVE AI" -> ["reve", "ai"])."""
+    if not value:
+        return []
+    return re.findall(r"[a-z0-9]+", value.lower())
+
+
+def _token_prefix_match(a: list[str], b: list[str]) -> bool:
+    """
+    True when the shorter token list is a whole-token leading prefix of the
+    longer one. Word-boundary aware, so ["reve"] matches ["reve", "ai"]
+    ("REVE AI") but never ["revel"] or ["revenue"]. Empty inputs never match.
+    """
+    if not a or not b:
+        return False
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return longer[: len(shorter)] == shorter
+
+
+def brand_matches_install(
+    brand_name: Optional[str], install: Optional[SlackInstallation]
+) -> bool:
+    """
+    True when a campaign's `brand_name` should route to this Slack install.
+
+    Exact normalized match on the install slug or workspace name wins; a
+    forgiving token-prefix match ("Reve" -> "REVE AI" workspace) is the
+    fallback. See the module docstring for the full strategy.
+    """
+    if install is None:
+        return False
+    target = _normalize(brand_name)
+    if not target:
+        return False
+    if _normalize(install.brand) == target or _normalize(install.team_name) == target:
+        return True
+    brand_toks = _tokens(brand_name)
+    return (
+        _token_prefix_match(brand_toks, _tokens(install.brand))
+        or _token_prefix_match(brand_toks, _tokens(install.team_name))
+    )
+
+
 def find_install_by_team(team_id: Optional[str]) -> Optional[SlackInstallation]:
     """Return the most recent SlackInstallation for a Slack team_id."""
     if not team_id:
@@ -54,16 +109,28 @@ def find_install_by_team(team_id: Optional[str]) -> Optional[SlackInstallation]:
 def find_install_for_brand_name(brand_name: Optional[str]) -> Optional[SlackInstallation]:
     """
     Return the SlackInstallation whose `brand` slug or `team_name` matches
-    `brand_name`, comparing case-insensitively after stripping non-alnum
-    characters. Returns None when no install matches.
+    `brand_name` (see the module docstring for the matching strategy).
+    An exact normalized match is preferred; a forgiving token-prefix match
+    ("Reve" -> "REVE AI" workspace) is the fallback. Returns None when no
+    install matches.
     """
     target = _normalize(brand_name)
     if not target:
         return None
     db = SessionLocal()
     try:
-        for install in db.query(SlackInstallation).all():
+        installs = db.query(SlackInstallation).all()
+        # Pass 1: exact normalized match on any install always wins.
+        for install in installs:
             if _normalize(install.brand) == target or _normalize(install.team_name) == target:
+                return install
+        # Pass 2: forgiving token-prefix fallback (e.g. brand "Reve" reaching
+        # the "REVE AI" workspace). Run only after no install matched exactly.
+        brand_toks = _tokens(brand_name)
+        for install in installs:
+            if _token_prefix_match(brand_toks, _tokens(install.brand)) or _token_prefix_match(
+                brand_toks, _tokens(install.team_name)
+            ):
                 return install
         return None
     finally:
