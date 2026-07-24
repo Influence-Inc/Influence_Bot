@@ -106,32 +106,53 @@ def find_install_by_team(team_id: Optional[str]) -> Optional[SlackInstallation]:
         db.close()
 
 
+def _install_is_usable(install: SlackInstallation) -> bool:
+    """A brand install can only receive posts if it has a bot token AND a channel."""
+    return bool(install.bot_token and install.channel_id)
+
+
 def find_install_for_brand_name(brand_name: Optional[str]) -> Optional[SlackInstallation]:
     """
     Return the SlackInstallation whose `brand` slug or `team_name` matches
     `brand_name` (see the module docstring for the matching strategy).
-    An exact normalized match is preferred; a forgiving token-prefix match
-    ("Reve" -> "REVE AI" workspace) is the fallback. Returns None when no
-    install matches.
+
+    Preference order among matches:
+      1. An exact normalized match beats a token-prefix match.
+      2. Within each tier, an install that can actually receive posts (has a
+         bot token AND a channel_id) beats one that can't — so a broken or
+         stale install never shadows a working one. Ties break on the most
+         recent install.
+    Returns None when no install matches at all.
     """
     target = _normalize(brand_name)
     if not target:
         return None
     db = SessionLocal()
     try:
-        installs = db.query(SlackInstallation).all()
-        # Pass 1: exact normalized match on any install always wins.
-        for install in installs:
-            if _normalize(install.brand) == target or _normalize(install.team_name) == target:
-                return install
-        # Pass 2: forgiving token-prefix fallback (e.g. brand "Reve" reaching
-        # the "REVE AI" workspace). Run only after no install matched exactly.
+        installs = (
+            db.query(SlackInstallation)
+            .order_by(SlackInstallation.installed_at.desc())
+            .all()
+        )
         brand_toks = _tokens(brand_name)
-        for install in installs:
-            if _token_prefix_match(brand_toks, _tokens(install.brand)) or _token_prefix_match(
-                brand_toks, _tokens(install.team_name)
-            ):
-                return install
+
+        # Pass 1: exact normalized match, preferring a usable install.
+        exact = [
+            i for i in installs
+            if _normalize(i.brand) == target or _normalize(i.team_name) == target
+        ]
+        if exact:
+            return next((i for i in exact if _install_is_usable(i)), exact[0])
+
+        # Pass 2: forgiving token-prefix fallback (e.g. brand "Reve" reaching
+        # the "REVE AI" workspace), again preferring a usable install.
+        prefix = [
+            i for i in installs
+            if _token_prefix_match(brand_toks, _tokens(i.brand))
+            or _token_prefix_match(brand_toks, _tokens(i.team_name))
+        ]
+        if prefix:
+            return next((i for i in prefix if _install_is_usable(i)), prefix[0])
         return None
     finally:
         db.close()
@@ -160,13 +181,33 @@ def post_to_brand_workspace(
     follow-ups under it. Returns `(None, None)` on no-op or failure.
     """
     install = find_install_for_brand_name(brand_name)
-    if install is None or not install.bot_token or not install.channel_id:
+    if install is None:
+        logger.info(
+            "Brand mirror skipped: no installed workspace matches brand=%r. "
+            "The brand must install via /slack/install, and its workspace name "
+            "or install slug must match the campaign's brand name.",
+            brand_name,
+        )
+        return None, None
+    if not _install_is_usable(install):
+        missing = "bot_token" if not install.bot_token else "channel_id"
+        logger.warning(
+            "Brand mirror skipped: install for %s (team_id=%s) is missing %s — "
+            "the brand needs to re-install the bot (with the incoming-webhook "
+            "scope so a channel is captured).",
+            install_brand_label(install), install.team_id, missing,
+        )
         return None, None
     try:
         response = WebClient(token=install.bot_token).chat_postMessage(
             channel=install.channel_id,
             text=text,
             blocks=blocks,
+        )
+        logger.info(
+            "Brand mirror posted: brand=%r -> %s (team_id=%s, channel=%s)",
+            brand_name, install_brand_label(install),
+            install.team_id, install.channel_id,
         )
         return response.get("channel") or install.channel_id, response.get("ts")
     except SlackApiError as e:
