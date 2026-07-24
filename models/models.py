@@ -31,7 +31,10 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
-engine = create_engine(Config.DATABASE_URL, echo=False)
+# pool_pre_ping checks a connection is alive before using it. Railway Postgres
+# drops idle connections, so without this the first query after an idle period
+# fails with "server closed the connection unexpectedly". Harmless for SQLite.
+engine = create_engine(Config.DATABASE_URL, echo=False, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine)
 
 
@@ -189,6 +192,28 @@ def _migrate_milestone_alerts_video_id():
                 "ALTER TABLE milestone_alerts ADD CONSTRAINT uq_milestone_alert "
                 "UNIQUE (campaign_id, creator_username, video_id, milestone_value)"
             ))
+
+
+class AppState(Base):
+    """
+    Small key/value store for app-level flags.
+
+    Used for the notification "baseline" watermark: after a deploy the dedup
+    tables may be empty (SQLite lives on Railway's ephemeral filesystem, so
+    every redeploy starts fresh). Before running any live checks we record the
+    current state silently and set `notification_baseline_done=done` here, so
+    pre-existing milestones/deadlines/deliverables aren't re-announced. On a
+    persistent database this flag survives, so the baseline runs exactly once.
+    """
+    __tablename__ = "app_state"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(String(255), nullable=True)
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class MilestoneAlert(Base):

@@ -19,10 +19,12 @@ from sqlalchemy.exc import IntegrityError
 from config import Config
 from models.models import (
     SessionLocal,
+    AppState,
     MilestoneAlert,
     DeliverableAlert,
     DeadlineReminder,
     UploadFollowup,
+    EmailLog,
     PaymentRecord,
 )
 from services.brand_routing import post_to_brand_workspace
@@ -44,6 +46,9 @@ MILESTONE_THRESHOLDS = [
     250_000, 500_000, 1_000_000, 1_500_000, 2_000_000,
     5_000_000, 10_000_000, 20_000_000, 50_000_000, 100_000_000,
 ]
+
+# AppState key marking that the silent notification baseline has been recorded.
+BASELINE_STATE_KEY = "notification_baseline_done"
 
 
 class SchedulerService:
@@ -113,12 +118,156 @@ class SchedulerService:
             logger.info("No creators returned from API, skipping checks")
             return
 
+        # First run after a fresh deploy: the dedup tables may be empty (on
+        # Railway, SQLite lives on the ephemeral filesystem and is wiped every
+        # redeploy). Record the current state silently so pre-existing
+        # milestones/deadlines/deliverables/uploads aren't re-announced — only
+        # genuinely new events after this point notify. The watermark lives in
+        # the same DB: on ephemeral storage it re-seeds each deploy; on a
+        # persistent DB it runs exactly once.
+        if not self._baseline_done():
+            recorded = self.seed_baseline(creators)
+            self._mark_baseline_done()
+            logger.info(
+                "Notification baseline recorded silently (%d dedup rows) — "
+                "suppressing pre-existing notifications for this deploy. "
+                "Only new events from here on will be posted.",
+                recorded,
+            )
+            return
+
         logger.info(f"Running checks on {len(creators)} creators")
 
         self.check_milestones(creators)
         self.check_deliverables_complete(creators)
         self.check_deadline_reminders(creators)
         self.check_upload_followups(creators)
+
+    # ------------------------------------------------------------------
+    # Silent baseline (redeploy suppression)
+    # ------------------------------------------------------------------
+    def _baseline_done(self) -> bool:
+        """True once the silent baseline has been recorded for this DB."""
+        db = SessionLocal()
+        try:
+            row = db.query(AppState).filter_by(key=BASELINE_STATE_KEY).first()
+            return row is not None and row.value == "done"
+        finally:
+            db.close()
+
+    def _mark_baseline_done(self):
+        """Persist the baseline watermark so live checks run from now on."""
+        db = SessionLocal()
+        try:
+            row = db.query(AppState).filter_by(key=BASELINE_STATE_KEY).first()
+            if row is None:
+                db.add(AppState(key=BASELINE_STATE_KEY, value="done"))
+            else:
+                row.value = "done"
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+        finally:
+            db.close()
+
+    def seed_baseline(self, creators: list[dict]) -> int:
+        """
+        Record the current notification-worthy state into the dedup tables
+        WITHOUT sending any Slack message or email. Mirrors the qualifying
+        predicate of each check_* method so a live run immediately after finds
+        every pre-existing item already deduped. Idempotent.
+        """
+        db = SessionLocal()
+        recorded = 0
+        try:
+            today = date.today()
+            for creator in creators:
+                username = creator.get("username", "")
+                campaign_id = creator.get("campaign_id", "")
+                deliverables = creator.get("deliverables", {}) or {}
+                all_complete = deliverables.get("allComplete") is True
+
+                # Milestones — per video, per threshold already crossed.
+                for video in (creator.get("videos") or []):
+                    video_id = video.get("id") or ""
+                    if not video_id:
+                        continue
+                    video_views = video.get("totalViews", 0) or 0
+                    for threshold in MILESTONE_THRESHOLDS:
+                        if video_views >= threshold:
+                            recorded += self._seed_row(
+                                db, MilestoneAlert,
+                                campaign_id=campaign_id,
+                                creator_username=username,
+                                video_id=video_id,
+                                milestone_value=threshold,
+                            )
+
+                # Deliverables complete.
+                if all_complete:
+                    recorded += self._seed_row(
+                        db, DeliverableAlert,
+                        campaign_id=campaign_id,
+                        creator_username=username,
+                    )
+
+                # Deadline reminder for the current tier (skip finished
+                # creators, matching check_deadline_reminder_for). Also seed the
+                # EmailLog row so the creator isn't re-emailed on redeploy.
+                if not all_complete:
+                    reminder_type = _deadline_reminder_type(
+                        creator.get("deadline"), today
+                    )
+                    if reminder_type:
+                        recorded += self._seed_row(
+                            db, DeadlineReminder,
+                            campaign_id=campaign_id,
+                            creator_username=username,
+                            reminder_type=reminder_type,
+                        )
+                        email = creator.get("email")
+                        if email:
+                            recorded += self._seed_row(
+                                db, EmailLog,
+                                recipient_email=email,
+                                template_type=f"deadline_{reminder_type}",
+                                campaign_id=campaign_id,
+                                creator_username=username,
+                            )
+
+                # Upload follow-up within the 5-day window.
+                min_videos = deliverables.get("minVideos")
+                if min_videos is not None:
+                    total_posted = creator.get("totalVideosPosted", 0)
+                    deadline_str = creator.get("deadline")
+                    if total_posted < min_videos and deadline_str:
+                        try:
+                            days_left = (date.fromisoformat(deadline_str) - today).days
+                        except (ValueError, TypeError):
+                            days_left = None
+                        if days_left is not None and 0 <= days_left <= 5:
+                            recorded += self._seed_row(
+                                db, UploadFollowup,
+                                campaign_id=campaign_id,
+                                creator_username=username,
+                            )
+        finally:
+            db.close()
+        return recorded
+
+    @staticmethod
+    def _seed_row(db, model, **fields) -> int:
+        """Insert a dedup row if absent. Returns 1 if inserted, else 0."""
+        existing = db.query(model).filter_by(**fields).first()
+        if existing:
+            return 0
+        db.add(model(**fields))
+        try:
+            db.commit()
+            return 1
+        except IntegrityError:
+            db.rollback()
+            return 0
 
     # ------------------------------------------------------------------
     # View Milestones
@@ -565,6 +714,29 @@ class SchedulerService:
             blocks=blocks,
         )
         logger.info(f"Payment summary sent: {len(pending)} creators")
+
+
+def _deadline_reminder_type(deadline_str, today: date) -> str | None:
+    """
+    Return the current deadline reminder tier ("overdue" / "1_day" / "3_days")
+    for a deadline, or None if outside the reminder window. Mirrors the tier
+    logic in SchedulerService.check_deadline_reminder_for so the baseline seeds
+    exactly the reminder a live check would send.
+    """
+    if not deadline_str:
+        return None
+    try:
+        deadline = date.fromisoformat(deadline_str)
+    except (ValueError, TypeError):
+        return None
+    days_left = (deadline - today).days
+    if days_left < 0:
+        return "overdue"
+    if days_left <= 1:
+        return "1_day"
+    if days_left <= 3:
+        return "3_days"
+    return None
 
 
 def _format_views(count: int) -> str:
