@@ -26,7 +26,7 @@ from models.models import (
     SessionLocal,
     UploadFollowup,
 )
-from services.brand_routing import find_install_by_team
+from services.brand_routing import brand_matches_install, find_install_by_team
 from services.slack_oauth import InstallConfigError, SlackInstallURLGenerator
 
 logger = logging.getLogger(__name__)
@@ -44,12 +44,6 @@ def _alert_counts() -> dict[str, int]:
         }
     finally:
         db.close()
-
-
-def _normalize(value):
-    if not value:
-        return ""
-    return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
 def _public_base_url(redirect_uri):
@@ -77,23 +71,21 @@ def register_commands(app, scheduler_service, reelstats_api):
         campaigns = reelstats_api.get_campaigns()
 
         install = find_install_by_team(command.get("team_id"))
-        brand_filter = None
-        if install is not None:
-            brand_filter = _normalize(install.brand) or _normalize(install.team_name)
 
-        if brand_filter:
+        if install is not None:
             before = len(campaigns)
             campaigns = [
                 c for c in campaigns
-                if _normalize(c.get("brandName")) == brand_filter
+                if brand_matches_install(c.get("brandName"), install)
             ]
             logger.info(
                 "/influence-status scoped to brand=%s team_id=%s: %d -> %d campaigns",
-                brand_filter, command.get("team_id"), before, len(campaigns),
+                install.brand or install.team_name, command.get("team_id"),
+                before, len(campaigns),
             )
 
         if not campaigns:
-            if brand_filter:
+            if install is not None:
                 msg = (
                     f":information_source: No active campaigns found for "
                     f"*{install.team_name or install.brand}*."
@@ -104,7 +96,7 @@ def register_commands(app, scheduler_service, reelstats_api):
             return
 
         header = ":bar_chart: *Active Campaigns*"
-        if brand_filter:
+        if install is not None:
             header = f":bar_chart: *Active Campaigns — {install.team_name or install.brand}*"
 
         lines = [header + "\n"]
