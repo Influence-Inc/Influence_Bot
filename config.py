@@ -77,6 +77,11 @@ class Config:
     # --- Application ---
     # Host/port binding is handled by gunicorn ($PORT on Railway), not here.
     DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///influence_bot.db")
+    # Railway/Heroku sometimes hand out the legacy "postgres://" scheme, which
+    # SQLAlchemy 2.0 no longer recognizes. Normalize to "postgresql://" so a
+    # Railway Postgres DATABASE_URL works without any manual editing.
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
     # Poll interval for the safety-net fallback. Real-time notifications come
     # from ReelStats webhooks; this loop catches anything a dropped webhook

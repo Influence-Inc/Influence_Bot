@@ -31,7 +31,10 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 Base = declarative_base()
-engine = create_engine(Config.DATABASE_URL, echo=False)
+# pool_pre_ping checks a connection is alive before using it. Railway Postgres
+# drops idle connections, so without this the first query after an idle period
+# fails with "server closed the connection unexpectedly". Harmless for SQLite.
+engine = create_engine(Config.DATABASE_URL, echo=False, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine)
 
 
