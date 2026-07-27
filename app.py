@@ -320,5 +320,17 @@ logger.info("Starting INFLUENCE Bot...")
 logger.info(f"ReelStats API: {Config.REELSTATS_API_URL}")
 logger.info(f"Poll interval: {Config.POLL_INTERVAL_SECONDS}s (webhook fallback)")
 
+# TEST_CAMPAIGN_NAME restricts the bot to a single campaign — every other
+# campaign's webhooks and polling results are dropped. Handy for testing,
+# disastrous in production (brands silently receive nothing). Warn loudly so a
+# leftover value from testing is easy to spot in the deploy logs.
+if Config.TEST_CAMPAIGN_NAME:
+    logger.warning(
+        "TEST_CAMPAIGN_NAME=%r is set — ONLY that campaign is processed; all "
+        "other campaigns' notifications (admin AND brand) are DROPPED. Unset "
+        "this environment variable in production.",
+        Config.TEST_CAMPAIGN_NAME,
+    )
+
 scheduler_service.start()
 atexit.register(scheduler_service.shutdown)
