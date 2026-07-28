@@ -212,9 +212,17 @@ def post_to_brand_workspace(
         return response.get("channel") or install.channel_id, response.get("ts")
     except SlackApiError as e:
         err = e.response.get("error") if e.response else str(e)
+        hint = ""
+        if err == "not_in_channel":
+            hint = (
+                " — the bot isn't a member of this channel. Grant the "
+                "`chat:write.public` scope and re-install so it can post to "
+                "public channels without an invite, or `/invite` the bot into "
+                "the channel."
+            )
         logger.warning(
-            "Brand-workspace post failed: brand=%s team_id=%s channel=%s error=%s",
-            install_brand_label(install), install.team_id, install.channel_id, err,
+            "Brand-workspace post failed: brand=%s team_id=%s channel=%s error=%s%s",
+            install_brand_label(install), install.team_id, install.channel_id, err, hint,
         )
     except Exception as e:
         logger.warning(
