@@ -24,9 +24,14 @@ from models.models import (
     DeliverableAlert,
     MilestoneAlert,
     SessionLocal,
+    SlackInstallation,
     UploadFollowup,
 )
-from services.brand_routing import brand_matches_install, find_install_by_team
+from services.brand_routing import (
+    brand_matches_install,
+    find_install_by_team,
+    find_install_for_brand_name,
+)
 from services.slack_oauth import InstallConfigError, SlackInstallURLGenerator
 
 logger = logging.getLogger(__name__)
@@ -258,6 +263,84 @@ def register_commands(app, scheduler_service, reelstats_api):
             response_type="ephemeral",
         )
 
+    @app.command("/influence-installs")
+    def handle_installs(ack, respond, command):
+        """
+        Admin-only. List every brand workspace that installed the bot and
+        whether it can actually receive posts (has a saved channel + token).
+        Optionally pass a brand name to test which install a campaign with
+        that brandName would route to — e.g. `/influence-installs Reve`.
+        """
+        ack()
+
+        # Admin workspace only (a brand workspace has its own install row).
+        if find_install_by_team(command.get("team_id")) is not None:
+            respond(
+                text=":lock: This command is reserved for the INFLUENCE admin workspace.",
+                response_type="ephemeral",
+            )
+            return
+
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(SlackInstallation)
+                .order_by(SlackInstallation.installed_at.desc())
+                .all()
+            )
+            summaries = []
+            for r in rows:
+                usable = bool(r.bot_token and r.channel_id)
+                flag = ":white_check_mark:" if usable else ":warning:"
+                if r.channel_name:
+                    channel = f"#{r.channel_name}"
+                elif r.channel_id:
+                    channel = r.channel_id
+                else:
+                    channel = "*no channel saved*"
+                note = "" if usable else "  _(can't receive posts — re-install and pick a channel)_"
+                summaries.append(
+                    f"{flag} slug *`{r.brand or '—'}`* · workspace *{r.team_name or r.team_id}* "
+                    f"→ {channel}{note}"
+                )
+        finally:
+            db.close()
+
+        if not summaries:
+            respond(
+                text=(
+                    ":information_source: No brand workspaces have installed the bot "
+                    "yet. Generate a link with `/influence-install <brand>`."
+                ),
+                response_type="ephemeral",
+            )
+            return
+
+        lines = [f":package: *Brand installs ({len(summaries)})*", *summaries]
+
+        # Optional routing test for a specific brandName.
+        test_brand = (command.get("text") or "").strip()
+        if test_brand:
+            match = find_install_for_brand_name(test_brand)
+            if match is None:
+                lines.append(
+                    f"\n:mag: A campaign with brandName *{test_brand}* matches "
+                    f"*no install* → brand notification would be skipped."
+                )
+            elif not (match.bot_token and match.channel_id):
+                lines.append(
+                    f"\n:mag: A campaign with brandName *{test_brand}* matches "
+                    f"*{match.team_name or match.team_id}*, but it has *no channel* "
+                    f"→ notification would be skipped (re-install needed)."
+                )
+            else:
+                lines.append(
+                    f"\n:mag: A campaign with brandName *{test_brand}* → posts to "
+                    f"*{match.team_name or match.team_id}* (#{match.channel_name})."
+                )
+
+        respond(text="\n".join(lines), response_type="ephemeral")
+
     @app.command("/influence-help")
     def handle_help(ack, respond):
         """Show all available bot commands."""
@@ -268,6 +351,7 @@ def register_commands(app, scheduler_service, reelstats_api):
                 "`/influence-status` — View active campaigns from the ReelStats API\n"
                 "`/influence-check` — Manually run all notification checks (admin only)\n"
                 "`/influence-install <brand>` — Generate a Slack install link for a brand (admin only)\n"
+                "`/influence-installs [brand]` — List brand installs / test routing (admin only)\n"
                 "`/influence-help` — Show this help message\n\n"
                 "*Automatic Features:*\n"
                 "- :trophy: View milestone alerts (250K, 500K, 1M, ...)\n"
