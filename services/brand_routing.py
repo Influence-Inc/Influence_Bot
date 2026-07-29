@@ -33,6 +33,7 @@ import logging
 import re
 from typing import Optional
 
+import requests
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -165,6 +166,51 @@ def install_brand_label(install: Optional[SlackInstallation]) -> str:
     return install.brand or install.team_name or install.team_id or "(unknown)"
 
 
+def _post_via_incoming_webhook(
+    install: SlackInstallation, text: str, blocks: list[dict]
+) -> bool:
+    """
+    Deliver a message using the incoming-webhook URL captured at install time.
+
+    Slack ties this URL to the exact conversation the brand picked during OAuth
+    (a public/private channel, or a DM) and it posts there *without the bot
+    being a member* — so it delivers even when INFLUENCE has no access to the
+    brand's workspace to invite the bot. Returns True on success.
+
+    Note: unlike chat.postMessage, an incoming webhook returns no message ts, so
+    brand-side threading/updates aren't available on this path — acceptable for
+    fire-and-forget notifications.
+    """
+    webhook_url = getattr(install, "webhook_url", None)
+    if not webhook_url:
+        return False
+    try:
+        resp = requests.post(
+            webhook_url,
+            json={"text": text, "blocks": blocks},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.warning(
+            "Incoming-webhook delivery failed: brand=%s error=%s",
+            install_brand_label(install), e,
+        )
+        return False
+    if resp.status_code == 200 and (resp.text or "").strip() == "ok":
+        logger.info(
+            "Brand mirror delivered via incoming webhook: brand=%s "
+            "(team_id=%s, channel=%s)",
+            install_brand_label(install), install.team_id,
+            install.channel_name or install.channel_id,
+        )
+        return True
+    logger.warning(
+        "Incoming-webhook delivery rejected: brand=%s status=%s body=%s",
+        install_brand_label(install), resp.status_code, (resp.text or "")[:200],
+    )
+    return False
+
+
 def post_to_brand_workspace(
     brand_name: Optional[str],
     text: str,
@@ -189,36 +235,50 @@ def post_to_brand_workspace(
             brand_name,
         )
         return None, None
-    if not _install_is_usable(install):
-        missing = "bot_token" if not install.bot_token else "channel_id"
-        logger.warning(
-            "Brand mirror skipped: install for %s (team_id=%s) is missing %s — "
-            "the brand needs to re-install the bot (with the incoming-webhook "
-            "scope so a channel is captured).",
-            install_brand_label(install), install.team_id, missing,
-        )
+
+    # Preferred path: chat.postMessage via the bot token. It returns a message
+    # ts so we can thread/update follow-ups — but it only works when the bot can
+    # post to the saved channel (a public channel with chat:write.public, or a
+    # channel the bot was invited to).
+    if _install_is_usable(install):
+        try:
+            response = WebClient(token=install.bot_token).chat_postMessage(
+                channel=install.channel_id,
+                text=text,
+                blocks=blocks,
+            )
+            logger.info(
+                "Brand mirror posted: brand=%r -> %s (team_id=%s, channel=%s)",
+                brand_name, install_brand_label(install),
+                install.team_id, install.channel_id,
+            )
+            return response.get("channel") or install.channel_id, response.get("ts")
+        except SlackApiError as e:
+            err = e.response.get("error") if e.response else str(e)
+            # not_in_channel / a DM / a private channel the bot isn't in: fall
+            # through to the incoming-webhook URL, which delivers to whatever
+            # conversation the brand chose at install time regardless of
+            # membership (the only reliable option when we can't enter the
+            # brand's workspace to invite the bot).
+            logger.info(
+                "chat.postMessage failed (error=%s) for brand=%s; "
+                "falling back to the incoming webhook.",
+                err, install_brand_label(install),
+            )
+        except Exception as e:
+            logger.warning(
+                "Brand-workspace chat.postMessage error: brand=%s error=%s",
+                install_brand_label(install), e,
+            )
+
+    # Fallback path: the incoming-webhook URL Slack handed us at install time.
+    if _post_via_incoming_webhook(install, text, blocks):
         return None, None
-    try:
-        response = WebClient(token=install.bot_token).chat_postMessage(
-            channel=install.channel_id,
-            text=text,
-            blocks=blocks,
-        )
-        logger.info(
-            "Brand mirror posted: brand=%r -> %s (team_id=%s, channel=%s)",
-            brand_name, install_brand_label(install),
-            install.team_id, install.channel_id,
-        )
-        return response.get("channel") or install.channel_id, response.get("ts")
-    except SlackApiError as e:
-        err = e.response.get("error") if e.response else str(e)
-        logger.warning(
-            "Brand-workspace post failed: brand=%s team_id=%s channel=%s error=%s",
-            install_brand_label(install), install.team_id, install.channel_id, err,
-        )
-    except Exception as e:
-        logger.warning(
-            "Brand-workspace post failed: brand=%s error=%s",
-            install_brand_label(install), e,
-        )
+
+    logger.warning(
+        "Brand mirror FAILED for brand=%s team_id=%s: neither chat.postMessage "
+        "nor an incoming webhook could deliver. Ask the brand to re-install and "
+        "pick a channel, or invite the bot into the chosen channel.",
+        install_brand_label(install), install.team_id,
+    )
     return None, None

@@ -27,10 +27,12 @@ class Config:
     SLACK_OAUTH_REDIRECT_URI = os.environ.get("SLACK_OAUTH_REDIRECT_URI")
     # Scopes requested during install. `incoming-webhook` causes Slack to prompt
     # the installing user to pick a channel, which is the channel the bot will
-    # post to for that workspace.
+    # post to for that workspace. `chat:write.public` lets the bot post to that
+    # channel (when public) without first being invited — without it, posts to a
+    # channel the bot hasn't been added to fail with `not_in_channel`.
     SLACK_OAUTH_SCOPES = os.environ.get(
         "SLACK_OAUTH_SCOPES",
-        "chat:write,channels:read,commands,incoming-webhook,users:read",
+        "chat:write,chat:write.public,channels:read,commands,incoming-webhook,users:read",
     )
     # HMAC key used to sign the `state` param in install URLs. Defaults to the
     # signing secret, but can be overridden.
