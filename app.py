@@ -37,6 +37,7 @@ from services.slack_authorize import authorize as slack_authorize
 from services.slack_oauth import (
     InstallConfigError,
     InstallStateError,
+    InstallTargetError,
     SlackInstallURLGenerator,
     handle_oauth_callback,
 )
@@ -239,6 +240,19 @@ def slack_oauth_redirect():
             badge="✕",
             heading="Link expired",
             message="This install link is no longer valid. Please ask your INFLUENCE contact for a fresh link.",
+            status_code=400,
+        )
+    except InstallTargetError as exc:
+        logger.info("Rejected DM install: %s", exc)
+        return _render_install_page(
+            badge="✕",
+            heading="Please pick a channel",
+            message=(
+                "INFLUENCE Bot needs to post to a channel, not a Direct Message, "
+                "so your whole team can see campaign notifications. Open the "
+                "install link again and choose a dedicated channel (for example "
+                "#influence-notifications) on the consent screen."
+            ),
             status_code=400,
         )
     except Exception as exc:
