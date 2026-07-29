@@ -254,6 +254,14 @@ Hitting that route 302s the brand to Slack's consent screen.
    `channel_name`, and `webhook_url`. From then on the bot uses that token +
    channel when posting on that brand's behalf.
 
+> **Channel required — DMs are rejected.** If the brand picks a Direct
+> Message on the consent screen instead of a channel, the callback rejects
+> the install (nothing is persisted) and shows a "Please pick a channel"
+> page asking them to re-install and choose a dedicated channel. This keeps
+> notifications visible to the whole brand team rather than a single person.
+> A 1:1 DM is detected by its `D…` conversation id; private channels (`G…`)
+> are allowed.
+
 ### Endpoints added
 
 | Route | Purpose |

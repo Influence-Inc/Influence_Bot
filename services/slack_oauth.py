@@ -48,6 +48,27 @@ class InstallStateError(RuntimeError):
     """Raised when the `state` param fails HMAC verification."""
 
 
+class InstallTargetError(RuntimeError):
+    """
+    Raised when the brand picked a Direct Message (instead of a channel) as
+    the bot's post target during install. We require a dedicated channel so
+    the whole brand team can see notifications, so this install is rejected
+    and not persisted.
+    """
+
+
+def _is_dm_channel(channel_id: Optional[str]) -> bool:
+    """
+    True when a Slack conversation id refers to a Direct Message.
+
+    Slack conversation ids are prefixed by type: ``C`` public channel,
+    ``G`` private channel / group DM, ``D`` direct message. Only a 1:1 DM
+    (``D``) is unambiguously a DM — a ``G`` id can be a legitimate private
+    channel, so we deliberately don't reject those.
+    """
+    return bool(channel_id) and channel_id.startswith("D")
+
+
 def _require_config() -> None:
     missing = [
         name
@@ -158,6 +179,10 @@ def handle_oauth_callback(code: str, state: str) -> SlackInstallation:
     Handle the Slack redirect to SLACK_OAUTH_REDIRECT_URI. Verifies `state`,
     exchanges `code` for a bot token, persists a SlackInstallation row, and
     returns it.
+
+    Raises InstallTargetError (and persists nothing) when the brand chose a
+    Direct Message instead of a channel during install — we require a
+    dedicated channel so the whole brand team sees notifications.
     """
     _require_config()
     state_payload = _verify_state(state)
@@ -168,6 +193,19 @@ def handle_oauth_callback(code: str, state: str) -> SlackInstallation:
     enterprise = data.get("enterprise") or {}
     incoming = data.get("incoming_webhook") or {}
     authed_user = data.get("authed_user") or {}
+
+    # Reject DM installs before writing anything. Slack still granted the bot
+    # token at this point, but we don't persist it, so the DM webhook is never
+    # used — the brand must re-install and pick a channel.
+    if _is_dm_channel(incoming.get("channel_id")):
+        logger.info(
+            "Rejecting DM install: team=%s brand=%s channel=%s (%s)",
+            team.get("id"), brand,
+            incoming.get("channel_id"), incoming.get("channel"),
+        )
+        raise InstallTargetError(
+            "INFLUENCE Bot must be installed to a channel, not a Direct Message."
+        )
 
     session = SessionLocal()
     try:
