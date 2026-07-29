@@ -248,10 +248,9 @@ def slack_oauth_redirect():
             badge="✕",
             heading="Please pick a channel",
             message=(
-                "INFLUENCE Bot needs to post to a channel, not a Direct Message, "
-                "so your whole team can see campaign notifications. Open the "
-                "install link again and choose a dedicated channel (for example "
-                "#influence-notifications) on the consent screen."
+                "INFLUENCE Bot needs to post to a channel, not a Direct Message. "
+                "Open the install link again and choose a dedicated channel "
+                "(for example #influence-notifications) on the consent screen."
             ),
             status_code=400,
         )
