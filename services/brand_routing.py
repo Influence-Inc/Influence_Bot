@@ -91,18 +91,39 @@ def brand_matches_install(
     )
 
 
+def _is_deactivated(install: SlackInstallation) -> bool:
+    """
+    True for an install that's been retired in place (see
+    `manage_slack_installs.py`'s `deactivate` command): both `brand` and
+    `team_name` blanked out, with the row itself kept around — usually
+    because a `ChatSpace.brand_install_id` foreign key still points to it.
+    A deactivated install must be invisible everywhere a "does this brand
+    identity match" or "is this a brand workspace" check happens.
+    """
+    return not install.brand and not install.team_name
+
+
 def find_install_by_team(team_id: Optional[str]) -> Optional[SlackInstallation]:
-    """Return the most recent SlackInstallation for a Slack team_id."""
+    """
+    Return the most recent *active* SlackInstallation for a Slack team_id.
+
+    Skips deactivated installs (see `_is_deactivated`) so a decommissioned
+    test/duplicate install can never make an otherwise-plain workspace — e.g.
+    the INFLUENCE admin home workspace, if a stray brand install once got
+    created there by mistake — look like a brand workspace and get locked
+    out of admin-only slash commands.
+    """
     if not team_id:
         return None
     db = SessionLocal()
     try:
-        return (
+        installs = (
             db.query(SlackInstallation)
             .filter_by(team_id=team_id)
             .order_by(SlackInstallation.installed_at.desc())
-            .first()
+            .all()
         )
+        return next((i for i in installs if not _is_deactivated(i)), None)
     finally:
         db.close()
 

@@ -17,7 +17,7 @@ from typing import Optional
 from slack_bolt.authorization import AuthorizeResult
 
 from config import Config
-from models.models import SessionLocal, SlackInstallation
+from services.brand_routing import find_install_by_team
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,11 @@ def authorize(
     **_: object,
 ) -> Optional[AuthorizeResult]:
     if team_id:
-        db = SessionLocal()
         try:
-            install = (
-                db.query(SlackInstallation)
-                .filter_by(team_id=team_id)
-                .order_by(SlackInstallation.installed_at.desc())
-                .first()
-            )
+            # find_install_by_team() skips deactivated installs, so a
+            # decommissioned/duplicate row for this team_id never shadows the
+            # SLACK_BOT_TOKEN fallback below.
+            install = find_install_by_team(team_id)
             if install and install.bot_token:
                 return AuthorizeResult(
                     enterprise_id=enterprise_id,
@@ -47,8 +44,6 @@ def authorize(
                 )
         except Exception:
             logger.exception("authorize: SlackInstallation lookup failed for team_id=%s", team_id)
-        finally:
-            db.close()
 
     if Config.SLACK_BOT_TOKEN:
         return AuthorizeResult(
