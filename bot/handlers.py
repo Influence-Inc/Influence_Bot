@@ -8,6 +8,7 @@ import logging
 from sqlalchemy.exc import IntegrityError
 
 from models.models import ReviewComment, ReviewSubmission, SessionLocal
+from services.brand_routing import find_install_by_team
 from services.email_service import EmailService
 from templates.email_templates import review_thread_comment
 
@@ -110,9 +111,25 @@ def register_event_handlers(app):
     """Register all Slack event listeners on the Bolt app."""
 
     @app.event("app_mention")
-    def handle_app_mention(event, say):
+    def handle_app_mention(event, say, context):
         """When the bot is @mentioned, respond with a helpful message."""
         user = event.get("user")
+
+        # Brand workspaces get a trimmed reply with no admin-only commands or
+        # internal (payment / deadline) features.
+        if find_install_by_team(context.get("team_id")) is not None:
+            say(
+                f"Hey <@{user}>! :wave: I'm the *INFLUENCE Bot*.\n\n"
+                f"Here's what I can do:\n"
+                f"- `/influence-status` — View your active campaigns\n"
+                f"- `/influence-help` — See available commands\n\n"
+                f"You'll automatically receive:\n"
+                f"- Breakout view milestone alerts\n"
+                f"- Draft videos submitted for your review\n"
+                f"- Posted content links from your creators"
+            )
+            return
+
         say(
             f"Hey <@{user}>! :wave: I'm the *INFLUENCE Bot*.\n\n"
             f"Here's what I can do:\n"
@@ -148,8 +165,13 @@ def register_event_handlers(app):
             )
 
     @app.event("team_join")
-    def handle_team_join(event, client):
-        """Welcome new team members."""
+    def handle_team_join(event, client, context):
+        """Welcome new members — only in the INFLUENCE admin workspace."""
+        # Never greet members of a brand's workspace: they aren't joining the
+        # INFLUENCE team, and brands shouldn't receive our internal welcome.
+        if find_install_by_team(context.get("team_id")) is not None:
+            return
+
         user_id = event.get("user", {}).get("id", "")
         if user_id:
             client.chat_postMessage(

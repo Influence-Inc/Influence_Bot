@@ -342,9 +342,27 @@ def register_commands(app, scheduler_service, reelstats_api):
         respond(text="\n".join(lines), response_type="ephemeral")
 
     @app.command("/influence-help")
-    def handle_help(ack, respond):
-        """Show all available bot commands."""
+    def handle_help(ack, respond, command):
+        """Show available commands — trimmed for brand workspaces."""
         ack()
+
+        # Brand workspaces see only what applies to them: no admin-only commands
+        # and no internal (payment / deadline / upload) features.
+        if find_install_by_team(command.get("team_id")) is not None:
+            respond(
+                text=(
+                    ":robot_face: *INFLUENCE Bot*\n\n"
+                    "`/influence-status` — View your active campaigns\n"
+                    "`/influence-help` — Show this help message\n\n"
+                    "*You'll automatically receive:*\n"
+                    "- :trophy: Breakout view milestone alerts (250K, 500K, 1M, ...)\n"
+                    "- :film_frames: Draft videos submitted for your review\n"
+                    "- :link: Posted content links from your creators"
+                ),
+                response_type="ephemeral",
+            )
+            return
+
         respond(
             text=(
                 ":robot_face: *INFLUENCE Bot Commands*\n\n"
