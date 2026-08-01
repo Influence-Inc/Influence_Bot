@@ -25,6 +25,7 @@ from config import Config
 from models.models import (
     ChatMessage,
     ChatSpace,
+    ReviewSubmission,
     SessionLocal,
     SlackInstallation,
 )
@@ -103,24 +104,54 @@ def _anchor_admin_slack(space_id: int, channel: Optional[str], ts: Optional[str]
         db.close()
 
 
+def _review_admin_anchor(space: ChatSpace) -> tuple[Optional[str], Optional[str]]:
+    """Return (channel, ts) of the review-submitted admin message so chat
+    pings can thread underneath the original "content to be reviewed"
+    post. Returns (None, None) when the space has no linked review or the
+    review's admin-channel post wasn't captured."""
+    if not space.latest_review_id:
+        return None, None
+    db = SessionLocal()
+    try:
+        review = db.query(ReviewSubmission).get(space.latest_review_id)
+        if review is None:
+            return None, None
+        return review.slack_channel, review.slack_ts
+    finally:
+        db.close()
+
+
 def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) -> None:
     """
     Slack-ping the INFLUENCE team channel (#content-reviews) so Jennifer's
-    team is kept in the loop on creator <-> brand chat activity. This is what
-    makes the composer's "… and Jennifer will be notified" hint truthful.
+    team is kept in the loop on chat activity. This is what makes the
+    composer's "… and Jennifer will be notified" hint truthful.
 
-    The first ping for a chat space anchors a thread (admin_slack_channel /
-    admin_slack_ts); every later creator/brand message on that space replies
-    in-thread instead of posting a fresh top-level message.
+    Pings thread under the original review-submitted "content to be
+    reviewed" post when its Slack coordinates are known, so every chat
+    message (creator, brand, or admin) lands as a reply inside that
+    thread instead of a fresh top-level notification. Falls back to the
+    legacy scheme (anchor on the first ping via admin_slack_ts) for chat
+    spaces whose review has no captured Slack post.
 
     Best-effort; never raises.
     """
-    if not Config.SLACK_BOT_TOKEN or not Config.SLACK_CHANNEL_REVIEWS:
+    if not Config.SLACK_BOT_TOKEN:
         return
     admin_url = ""
     if Config.PUBLIC_BASE_URL:
         admin_url = f"{Config.PUBLIC_BASE_URL}/admin/chats/{space.id}"
-    channel = space.admin_slack_channel or Config.SLACK_CHANNEL_REVIEWS
+
+    review_channel, review_ts = _review_admin_anchor(space)
+    channel = (
+        review_channel
+        or space.admin_slack_channel
+        or Config.SLACK_CHANNEL_REVIEWS
+    )
+    if not channel:
+        return
+    thread_ts = review_ts or space.admin_slack_ts or None
+
     try:
         blocks = build_chat_influence_ping_blocks(
             creator_username=space.creator_username,
@@ -137,9 +168,11 @@ def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) 
                 f"{space.brand_name or 'brand'} × @{space.creator_username}"
             ),
             blocks=blocks,
-            thread_ts=space.admin_slack_ts or None,
+            thread_ts=thread_ts,
         )
-        if not space.admin_slack_ts and response.get("ok"):
+        # Only fall back to anchoring on the first ping when we couldn't
+        # thread under the review-submitted message.
+        if not review_ts and not space.admin_slack_ts and response.get("ok"):
             _anchor_admin_slack(space.id, response.get("channel"), response.get("ts"))
     except SlackApiError as exc:
         err = exc.response.get("error") if exc.response else str(exc)
@@ -219,9 +252,10 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
             except Exception as exc:
                 logger.warning("brand new-message Slack post failed: %s", exc)
 
-    # Keep the INFLUENCE team (Jennifer) notified of every creator/brand
-    # message. Admin messages come *from* INFLUENCE, so they're skipped here.
-    if sender_party in ("creator", "brand"):
-        _notify_influence_team(
-            space, sender_name=sender_name, preview=preview or "(image / attachment)"
-        )
+    # Keep the INFLUENCE team (Jennifer) notified of every chat message —
+    # including admin-sent ones, so anything typed from the admin side of
+    # the chat also shows up (threaded) under the review-submitted post
+    # in #content-reviews rather than only living inside the chat UI.
+    _notify_influence_team(
+        space, sender_name=sender_name, preview=preview or "(image / attachment)"
+    )

@@ -119,6 +119,8 @@ def approve_review_core(
         campaign_slug = row.campaign_slug or ""
         video_link = row.video_link or ""
         submit_posts_url = row.submit_posts_url or None
+        review_slack_channel = row.slack_channel
+        review_slack_ts = row.slack_ts
     finally:
         db.close()
 
@@ -161,6 +163,8 @@ def approve_review_core(
         brand_name=brand_name,
         video_link=video_link,
         actor_name=actor_name,
+        review_slack_channel=review_slack_channel,
+        review_slack_ts=review_slack_ts,
     )
 
     logger.info(
@@ -177,9 +181,19 @@ def _post_admin_approval_notification(
     brand_name: str,
     video_link: str,
     actor_name: str,
+    review_slack_channel: str | None = None,
+    review_slack_ts: str | None = None,
 ) -> None:
-    """Post the approval recap to admin #content-reviews via the home token."""
-    if not Config.SLACK_BOT_TOKEN or not Config.SLACK_CHANNEL_REVIEWS:
+    """Post the approval recap to admin #content-reviews via the home token.
+
+    Threads under the original review-submitted message when its Slack
+    coordinates are known, so approvals show up as a reply inside the
+    "content to be reviewed" thread rather than as a fresh top-level post.
+    """
+    if not Config.SLACK_BOT_TOKEN:
+        return
+    channel = review_slack_channel or Config.SLACK_CHANNEL_REVIEWS
+    if not channel:
         return
     try:
         blocks = build_review_approved_blocks(
@@ -190,9 +204,10 @@ def _post_admin_approval_notification(
             actor_name=actor_name,
         )
         WebClient(token=Config.SLACK_BOT_TOKEN).chat_postMessage(
-            channel=Config.SLACK_CHANNEL_REVIEWS,
+            channel=channel,
             text=f"Review approved for @{creator_username}",
             blocks=blocks,
+            thread_ts=review_slack_ts or None,
         )
     except SlackApiError as exc:
         err = exc.response.get("error") if exc.response else str(exc)
