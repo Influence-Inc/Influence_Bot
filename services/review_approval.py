@@ -226,7 +226,12 @@ def run_auto_approval_sweep() -> int:
 
     Two cases:
     1. No decision at all 24h after the review was submitted (brand
-       ignored the Slack message entirely).
+       ignored the Slack message entirely) AND the review's chat space
+       has no messages. The chat space is pre-created at review-post
+       time, so anyone (creator/brand/admin) can post in it before the
+       brand clicks a button; any such activity means the review is
+       being worked, so it shouldn't be auto-approved on the silence
+       clock.
     2. Decision is `changes_requested` and 24h have passed since that
        click, but the chat space still has zero messages (brand opened
        the chat and then went silent).
@@ -238,12 +243,23 @@ def run_auto_approval_sweep() -> int:
 
     db = SessionLocal()
     try:
+        # Any message in the review's chat space (matched via
+        # ChatSpace.latest_review_id, the per-review mapping) counts as
+        # activity and pauses the no-action clock — regardless of who
+        # sent it or the space's status.
+        chat_activity_exists = (
+            db.query(ChatMessage.id)
+            .join(ChatSpace, ChatSpace.id == ChatMessage.chat_space_id)
+            .filter(ChatSpace.latest_review_id == ReviewSubmission.id)
+            .exists()
+        )
         no_action_rows = (
             db.query(ReviewSubmission.id)
             .filter(
                 ReviewSubmission.decision.is_(None),
                 ReviewSubmission.submitted_at.isnot(None),
                 ReviewSubmission.submitted_at <= cutoff,
+                ~chat_activity_exists,
             )
             .all()
         )
