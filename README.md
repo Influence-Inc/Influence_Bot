@@ -32,6 +32,7 @@ INFLUENCE Bot
 │   ├── webhook_handler.py          # Handles ReelStats webhook events (review/video-links submitted)
 │   ├── scheduler_service.py        # Poll loop + milestone/deliverable/deadline/upload checks
 │   ├── review_approval.py          # Shared approve / 24h auto-approval flow
+│   ├── review_coverage.py          # Do a creator's in-review videos cover what they still owe?
 │   ├── email_service.py            # Resend HTTPS email sending (jennifer@useinfluence.xyz)
 │   ├── brand_routing.py            # Maps Slack workspaces <-> brands for per-brand notifications
 │   ├── slack_oauth.py              # Per-brand install links + OAuth callback
@@ -284,5 +285,6 @@ Hitting that route 302s the brand to Slack's consent screen.
 - **Poll-loop checks** — Every `POLL_INTERVAL_SECONDS` (default 60s) the bot re-fetches `GET /api/bot/campaigns` and runs milestone, deliverables-complete, deadline, and upload-follow-up checks (idempotent via per-alert dedup tables)
 - **Daily summary at 9 AM** — Posts a payment-readiness overview to the payments channel
 - **Escalating deadline reminders** — 3 days before -> 1 day before -> overdue, via Slack + email
+- **Reminder emails skip creators waiting on review** — the nag email is held when the videos a creator has already shared for review cover the deliverables they still owe (counted, so 1 video shared against 2 still owed still emails; a draft sent back with "Request Changes" doesn't count, and an unmet view target needs at least one video still in the pipeline). The Slack alert still posts, annotated with why no email went out
 - **Real-time webhook alerts** — Review submissions, video-link submissions, approvals (poll is the safety-net fallback)
 - **24h review auto-approval** — Sweeps every 30 min to auto-approve reviews left un-actioned for 24h
