@@ -137,8 +137,15 @@ def build_deadline_reminder_blocks(
     deadline: str,
     reminder_type: str,
     days_left: int,
+    email_note: str | None = None,
 ) -> list[dict]:
-    """Deadline reminder — 3 days, 1 day, or overdue."""
+    """
+    Deadline reminder — 3 days, 1 day, or overdue.
+
+    `email_note` explains why the creator wasn't emailed (their videos in
+    review already cover what's outstanding), so the team chases the
+    review rather than the creator.
+    """
     if reminder_type == "overdue":
         emoji = ":red_circle:"
         title = "Deadline Overdue!"
@@ -152,7 +159,7 @@ def build_deadline_reminder_blocks(
         title = "Deadline Approaching"
         status_text = f"The deadline is *{deadline}* — *{days_left} days remaining*."
 
-    return [
+    blocks = [
         {
             "type": "header",
             "text": {
@@ -173,8 +180,14 @@ def build_deadline_reminder_blocks(
             "type": "section",
             "text": {"type": "mrkdwn", "text": status_text},
         },
-        {"type": "divider"},
     ]
+    if email_note:
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f":mailbox_with_no_mail: {email_note}"}],
+        })
+    blocks.append({"type": "divider"})
+    return blocks
 
 
 def build_upload_followup_blocks(

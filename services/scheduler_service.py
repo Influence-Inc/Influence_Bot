@@ -31,6 +31,7 @@ from services.brand_routing import post_to_brand_workspace
 from services.reelstats_api import ReelStatsAPI
 from services.email_service import EmailService, EmailSendResult
 from services.review_approval import run_auto_approval_sweep
+from services.review_coverage import review_coverage
 from templates.slack_blocks import (
     _format_upload_date,
     build_milestone_blocks,
@@ -225,8 +226,13 @@ class SchedulerService:
                             creator_username=username,
                             reminder_type=reminder_type,
                         )
+                        # Only seed the EmailLog row for an email a live
+                        # check would actually have sent. Seeding one that
+                        # review coverage suppresses would mark this tier as
+                        # "already emailed" forever, so the reminder could
+                        # never fire later if the brand sends the draft back.
                         email = creator.get("email")
-                        if email:
+                        if email and not review_coverage(creator).covered:
                             recorded += self._seed_row(
                                 db, EmailLog,
                                 recipient_email=email,
@@ -500,10 +506,21 @@ class SchedulerService:
         campaign_id = creator.get("campaign_id", "")
         email = creator.get("email")
 
+        # A creator who has already shared enough videos for review isn't
+        # stalling — they're waiting on the brand. Skip the nag email, but
+        # still post the internal Slack alert (annotated) so the team knows
+        # to chase the review instead of the creator.
+        coverage = review_coverage(creator)
+
         # Email dedup is independent of Slack dedup: try the email every tick
         # until it succeeds, even if the Slack message was already posted.
         email_result = None
-        if email:
+        if email and coverage.covered:
+            logger.info(
+                "Deadline reminder email suppressed for @%s (%s): %s",
+                username, reminder_type, coverage.summary,
+            )
+        elif email:
             from templates.email_templates import deadline_reminder_email
             template = deadline_reminder_email(
                 creator_name=username,
@@ -542,6 +559,10 @@ class SchedulerService:
                 deadline=deadline_str,
                 reminder_type=reminder_type,
                 days_left=days_left,
+                email_note=(
+                    f"Creator email skipped — {coverage.summary}."
+                    if coverage.covered else None
+                ),
             )
             text = f"Deadline reminder for @{username}: {reminder_type.replace('_', ' ')}"
             self.client.chat_postMessage(
