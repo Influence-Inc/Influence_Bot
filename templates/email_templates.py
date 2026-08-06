@@ -128,16 +128,20 @@ INFLUENCE Team
 
 
 def chat_new_message(
-    creator_name: str, brand_name: str, preview: str, chat_url: str
+    creator_name: str, brand_name: str, message: str, chat_url: str
 ) -> dict:
-    """Email to a creator when a brand posts a new message in the chat space."""
+    """Email to a creator when a brand posts a new message in the chat space.
+
+    `message` is the full message body (newlines preserved) — the email quotes
+    it in its entirety rather than a truncated preview.
+    """
     subject = f"{brand_name} team messaged you — Content Review"
     body = f"""Hi {creator_name},
 
 {brand_name} Team just sent you a message about the content you submitted for review:
 
 --
-{preview}
+{message}
 --
 
 Reply here:

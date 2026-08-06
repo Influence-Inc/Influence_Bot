@@ -200,10 +200,13 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
         msg = db.query(ChatMessage).get(message_id)
         if msg is None:
             return
-        preview = (msg.body or "").strip()
+        full_body = (msg.body or "").strip()
         sender_name = msg.sender_display_name or msg.sender_party
     finally:
         db.close()
+    # The creator email quotes the message in full; the Slack pings (which have
+    # tighter block limits) get a short preview.
+    preview = full_body
     if len(preview) > 200:
         preview = preview[:197] + "…"
 
@@ -214,7 +217,7 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
                 tmpl = chat_new_message(
                     creator_name=space.creator_username,
                     brand_name=space.brand_name or "the brand",
-                    preview=preview or "(image / attachment)",
+                    message=full_body or "(image / attachment)",
                     chat_url=creator_url,
                 )
                 _email_service.send_email(
