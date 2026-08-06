@@ -14,7 +14,9 @@ Routes:
 
   GET  /admin/chats                   — admin list (token-gated)
   POST /admin/chats/login             — exchange admin token for session
-  GET  /admin/chats/<space_id>        — admin read-only chat view
+  GET  /admin/chats/<space_id>        — admin chat view (same rich UI as the
+                                        creator/brand chat, driven by the
+                                        shared /chat/<slug>/... endpoints)
 """
 
 from __future__ import annotations
@@ -47,7 +49,6 @@ from services.chat_service import (
     find_by_id,
 )
 from templates.chat_pages import (
-    ADMIN_CHAT_PAGE,
     ADMIN_LOGIN_PAGE,
     CHAT_PAGE,
     ERROR_PAGE,
@@ -66,6 +67,32 @@ bp = Blueprint("chat", __name__)
 
 ADMIN_COOKIE = "influence_chat_admin"
 _ADMIN_SALT = "influence-chat-admin-v1"
+
+# Identity the admin posts / reacts / reads under, so the shared chat UI can
+# treat an authenticated admin exactly like a creator or brand member.
+ADMIN_PARTY = "admin"
+ADMIN_IDENTIFIER = "influence-admin"
+ADMIN_DISPLAY_NAME = "Influence"
+
+
+class _AdminSession:
+    """Session stand-in for an authenticated admin acting inside a chat space.
+
+    Mirrors the attributes the ``/chat/<slug>/...`` routes read off a real
+    ``ChatSession`` (``party``, ``identifier``, ``display_name``, ``id``,
+    ``chat_space_id``) so the admin drives the very same endpoints — and thus
+    the same rich UI — as creators and brands, posting as party ``admin``.
+    """
+
+    party = ADMIN_PARTY
+    identifier = ADMIN_IDENTIFIER
+    display_name = ADMIN_DISPLAY_NAME
+
+    def __init__(self, chat_space_id: int) -> None:
+        self.chat_space_id = chat_space_id
+        # A negative, per-space id keeps the message rate-limit bucket separate
+        # from real (always-positive) session ids without colliding per space.
+        self.id = -chat_space_id
 
 
 def _admin_serializer() -> URLSafeTimedSerializer:
@@ -124,17 +151,25 @@ def _error_response(heading: str, message: str, status: int = 400) -> Response:
 
 
 def _require_session_for_space(space_id: int):
-    """Returns (session_obj_or_None, error_response_or_None)."""
+    """Returns (session_obj_or_None, error_response_or_None).
+
+    A creator/brand session scoped to this space wins. Failing that, an
+    authenticated admin gets an :class:`_AdminSession` stand-in so the admin
+    can use the same message/react/typing/read/SSE endpoints that power the
+    creator and brand UI — acting as party ``admin`` on any space.
+    """
     cookie = request.cookies.get(SESSION_COOKIE)
     sess = load_session(cookie)
-    if sess is None or sess.chat_space_id != space_id:
-        return None, _error_response(
-            "Sign-in required",
-            "This chat link has expired or is invalid. Please open the most recent "
-            "link from your email or Slack.",
-            status=401,
-        )
-    return sess, None
+    if sess is not None and sess.chat_space_id == space_id:
+        return sess, None
+    if _is_admin():
+        return _AdminSession(space_id), None
+    return None, _error_response(
+        "Sign-in required",
+        "This chat link has expired or is invalid. Please open the most recent "
+        "link from your email or Slack.",
+        status=401,
+    )
 
 
 def _resolve_slug(slug: str):
@@ -257,6 +292,7 @@ def chat_page(slug: str):
         self_party=sess.party,
         chat_title=chat_title,
         initial_read_state=initial_read,
+        is_admin=(sess.party == ADMIN_PARTY),
     )
     return Response(html, mimetype="text/html")
 
@@ -479,13 +515,14 @@ def chat_messages_read(slug: str):
 
 @bp.route("/chat/attachment/<int:attachment_id>", methods=["GET"])
 def chat_attachment(attachment_id: int):
-    admin_view = request.args.get("admin") == "1"
     att = chat_service.find_attachment(attachment_id)
     if att is None:
         return _error_response("Not found", "Attachment not found.", status=404)
 
     # Authorize: either the requester has a session on the parent chat
-    # space, or they're an authenticated admin.
+    # space, or they're an authenticated admin. The admin chat UI loads
+    # attachments via the same `/chat/attachment/<id>` URL as everyone else
+    # (the legacy `?admin=1` marker is still accepted for old links).
     from models.models import ChatMessage, SessionLocal
     db = SessionLocal()
     try:
@@ -495,7 +532,7 @@ def chat_attachment(attachment_id: int):
     if msg is None:
         return _error_response("Not found", "Attachment not found.", status=404)
 
-    if admin_view and _is_admin():
+    if _is_admin():
         authorized = True
     else:
         sess = load_session(request.cookies.get(SESSION_COOKIE))
@@ -594,12 +631,19 @@ def admin_chat_view(space_id: int):
     space = find_by_id(space_id)
     if space is None:
         return _error_response("Not found", "Chat space not found.", status=404)
-    messages = chat_service.list_messages(chat_space_id=space_id, limit=2000)
+    # Admins get the exact same rich chat UI as creators and brands (live SSE,
+    # typing, reactions, read receipts, image lightbox, composer with
+    # attachments) — plus an admin chrome bar (breadcrumb, metadata, export,
+    # archive/reopen). The page's JS drives the shared /chat/<slug>/... API,
+    # which now accepts an authenticated admin as party 'admin'.
+    initial_read = chat_service.read_state_for_space(space.id)
     html = render_template_string(
-        ADMIN_CHAT_PAGE,
+        CHAT_PAGE,
         space=space,
-        messages=messages,
-        title=_format_chat_space_title(space),
+        self_party=ADMIN_PARTY,
+        chat_title=_format_chat_space_title(space),
+        initial_read_state=initial_read,
+        is_admin=True,
     )
     return Response(html, mimetype="text/html")
 

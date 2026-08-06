@@ -15,7 +15,7 @@ CHAT_PAGE = """\
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>{{ chat_title }} — INFLUENCE</title>
+  <title>{{ chat_title }} — {{ 'Admin' if is_admin else 'INFLUENCE' }}</title>
   <style>
     :root{
       color-scheme: light;
@@ -152,7 +152,24 @@ CHAT_PAGE = """\
     .lightbox img{max-width:100%;max-height:100%;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
     .lightbox .lb-close{position:fixed;top:14px;right:18px;width:40px;height:40px;border-radius:99px;background:rgba(255,255,255,.14);color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;line-height:1;cursor:pointer}
 
+    /* ── ADMIN BAR (admin view only) ── */
+    .admin-bar{background:#F9FAFB;border-bottom:.5px solid var(--line)}
+    .admin-bar-inner{max-width:820px;margin:0 auto;width:100%;padding:10px 20px;display:flex;flex-direction:column;gap:7px}
+    .admin-crumbs{font-size:12px}
+    .admin-crumbs a{color:#1d4ed8;text-decoration:none}
+    .admin-crumbs a:hover{text-decoration:underline}
+    .admin-meta{font-size:12px;color:var(--muted);letter-spacing:-.005em;word-break:break-word;line-height:1.45}
+    .admin-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .admin-toolbar form{display:inline;margin:0}
+    .admin-toolbar a,.admin-toolbar button{font-size:12.5px;padding:6px 11px;border-radius:8px;text-decoration:none;
+      border:.5px solid var(--line-2);background:#fff;color:#1f2937;cursor:pointer;line-height:1;min-height:32px;
+      display:inline-flex;align-items:center}
+    .admin-toolbar .danger{color:#991b1b;border-color:#fecaca;background:#fff1f2}
+    .admin-toolbar .primary{color:#fff;background:#111827;border-color:#111827}
+
     @media (max-width:640px){
+      .admin-bar-inner{padding:9px 12px}
+      .admin-toolbar a,.admin-toolbar button{font-size:12px;padding:6px 10px}
       .hdr-inner{padding:9px 12px 11px}
       .av.lg{width:38px;height:38px;font-size:13px}
       .header-title{font-size:14px}
@@ -195,10 +212,43 @@ CHAT_PAGE = """\
       </div>
     </div>
 
-    {% if space.status == 'archived' %}
-    <div class="banner archived">This campaign has ended — chat is archived and read-only.</div>
-    {% elif space.status == 'approved' %}
-    <div class="banner approved">This review has been approved — chat is closed and read-only.</div>
+    {% if is_admin %}
+    <!-- ADMIN BAR — breadcrumb, metadata, and the same tools as the old admin view -->
+    <div class="admin-bar">
+      <div class="admin-bar-inner">
+        <div class="admin-crumbs"><a href="/admin/chats">&larr; Campaign dashboard</a></div>
+        <div class="admin-meta">Campaign {{ space.campaign_name or '—' }} &middot; Brand {{ space.brand_name or '—' }} &middot; Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} &middot; status: {{ space.status }} &middot; created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
+        <div class="admin-toolbar">
+          <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
+          <a href="/admin/chats/{{ space.id }}/export.json" download>Export JSON</a>
+          {% if space.status == 'active' %}
+            <form method="POST" action="/admin/chats/{{ space.id }}/archive">
+              <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+              <button type="submit" class="danger" onclick="return confirm('Archive this chat? Both parties will lose access until it is reopened.');">Archive</button>
+            </form>
+          {% else %}
+            <form method="POST" action="/admin/chats/{{ space.id }}/reopen">
+              <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+              <button type="submit" class="primary">Reopen</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if is_admin %}
+      {% if space.status == 'archived' %}
+      <div class="banner archived">This chat is archived. Reopen it before posting; existing sessions stay revoked, so both parties will need fresh magic links.</div>
+      {% elif space.status == 'approved' %}
+      <div class="banner approved">This review was approved. The chat is closed for the brand and creator but stays here as a record. It will be archived automatically when the campaign ends.</div>
+      {% endif %}
+    {% else %}
+      {% if space.status == 'archived' %}
+      <div class="banner archived">This campaign has ended — chat is archived and read-only.</div>
+      {% elif space.status == 'approved' %}
+      <div class="banner approved">This review has been approved — chat is closed and read-only.</div>
+      {% endif %}
     {% endif %}
 
     <!-- FEED -->
@@ -216,13 +266,13 @@ CHAT_PAGE = """\
         <div class="composer-input">
           <div class="composer-typing" id="composerTyping" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
           <div class="editable" id="bodyInput" contenteditable="{{ 'false' if space.status != 'active' else 'true' }}"
-               data-empty="true" data-placeholder="Message" role="textbox" aria-label="Message"></div>
+               data-empty="true" data-placeholder="{{ 'Message as Influence' if is_admin else 'Message' }}" role="textbox" aria-label="Message"></div>
           <button type="button" class="send-btn" id="sendBtn" title="Send" {% if space.status != 'active' %}disabled{% endif %}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
           </button>
         </div>
       </div>
-      <div class="notify-hint">{% if self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
+      <div class="notify-hint">{% if is_admin %}Posting as Influence — @{{ space.creator_username }} and {{ space.brand_name or 'the brand' }} will be notified{% elif self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
     </div>
 
   </div>
@@ -687,96 +737,6 @@ button { width:100%; padding:12px; background:#111827; color:#fff; border:0; bor
   <button type="submit">Enter</button>
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
 </form></div></body></html>
-"""
-
-
-
-
-ADMIN_CHAT_PAGE = """\
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ space.campaign_name or 'Chat' }} — Admin</title>
-<style>
-body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f4f5f7; margin:0; }
-.container { max-width:820px; margin:0 auto; padding:24px; box-sizing:border-box; }
-.crumbs { font-size:13px; color:#6b7280; margin-bottom:8px; }
-.crumbs a { color:#1d4ed8; text-decoration:none; }
-h1 { font-size:18px; margin:0 0 4px; word-wrap:break-word; }
-.meta { font-size:13px; color:#6b7280; margin-bottom:12px; word-wrap:break-word; }
-.toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px; }
-.toolbar a, .toolbar button { font-size:13px; padding:8px 12px; border-radius:8px; text-decoration:none; border:1px solid #d1d5db; background:#fff; color:#1f2937; cursor:pointer; min-height:36px; box-sizing:border-box; }
-.toolbar form { display:inline; margin:0; }
-.toolbar .danger { color:#991b1b; border-color:#fecaca; background:#fff1f2; }
-.toolbar .primary { color:#fff; background:#111827; border-color:#111827; }
-.archived-note { background:#fef2f2; color:#991b1b; padding:8px 12px; border-radius:8px; font-size:13px; margin-bottom:12px; }
-.msg { background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:10px 14px; margin:8px 0; }
-.msg.party-admin { background:#fffbeb; border-color:#fde68a; }
-.msg .who { font-size:11px; color:#6b7280; margin-bottom:2px; }
-.msg .body { white-space:pre-wrap; font-size:14px; word-break:break-word; }
-.msg .ts { font-size:11px; color:#9ca3af; margin-top:4px; }
-.msg img { max-width:min(240px, 80%); border-radius:8px; margin-top:6px; display:block; }
-.reactions { margin-top:6px; font-size:12px; color:#6b7280; }
-.compose { background:#fff; border:1px solid #e5e5ea; border-radius:10px; padding:10px; margin-top:14px; }
-.compose textarea { width:100%; padding:10px 12px; border-radius:8px; border:1px solid #d1d5db; font-family:inherit; font-size:16px; min-height:60px; box-sizing:border-box; resize:vertical; }
-.compose .row { display:flex; justify-content:space-between; align-items:center; margin-top:8px; gap:8px; flex-wrap:wrap; }
-.compose .row .hint { font-size:11px; color:#6b7280; flex:1 1 60%; min-width:0; }
-.compose button { background:#111827; color:#fff; border:0; padding:10px 16px; border-radius:8px; cursor:pointer; font-size:14px; min-height:40px; }
-@media (max-width: 640px) {
-  .container { padding:14px; }
-  h1 { font-size:17px; }
-  .meta { font-size:12px; }
-  .toolbar a, .toolbar button { font-size:12px; padding:8px 10px; }
-  .msg { padding:9px 12px; }
-  .msg .body { font-size:13px; }
-  .compose .row .hint { flex-basis:100%; }
-}
-</style></head><body>
-<div class="container">
-<div class="crumbs"><a href="/admin/chats">← Campaign dashboard</a></div>
-<h1>{{ title }}</h1>
-<div class="meta">Campaign {{ space.campaign_name or '—' }} · Brand {{ space.brand_name or '—' }} · Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} · status: {{ space.status }} · created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
-
-<div class="toolbar">
-  <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
-  <a href="/admin/chats/{{ space.id }}/export.json" download>Export JSON</a>
-  {% if space.status == 'active' %}
-    <form method="POST" action="/admin/chats/{{ space.id }}/archive">
-      <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
-      <button type="submit" class="danger" onclick="return confirm('Archive this chat? Both parties will lose access until it is reopened.');">Archive</button>
-    </form>
-  {% else %}
-    <form method="POST" action="/admin/chats/{{ space.id }}/reopen">
-      <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
-      <button type="submit" class="primary">Reopen</button>
-    </form>
-  {% endif %}
-</div>
-
-{% if space.status == 'archived' %}<div class="archived-note">This chat is archived. Reopen it before posting; existing sessions stay revoked, so both parties will need fresh magic links.</div>{% endif %}
-{% if space.status == 'approved' %}<div class="archived-note" style="background:#ecfdf5;color:#065f46;">This review was approved. The chat is closed for the brand and creator but stays here as a record. It will be archived automatically when the campaign ends.</div>{% endif %}
-
-{% for m in messages %}
-<div class="msg party-{{ m.party }}">
-  <div class="who">{{ m.sender }} · {{ m.party }}</div>
-  {% if m.body and m.body.strip() %}<div class="body">{{ m.body }}</div>{% endif %}
-  {% for a in m.attachments %}<img src="/chat/attachment/{{ a.id }}?admin=1" alt="{{ a.filename }}">{% endfor %}
-  {% if m.reactions %}<div class="reactions">{% for emoji, count in m.reactions.items() %}{{ emoji }} {{ count }} &nbsp;{% endfor %}</div>{% endif %}
-  <div class="ts">{{ m.created_at }}</div>
-</div>
-{% endfor %}
-{% if not messages %}<div style="text-align:center;color:#6b7280;padding:24px">No messages yet.</div>{% endif %}
-
-{% if space.status == 'active' %}
-<form class="compose" method="POST" action="/admin/chats/{{ space.id }}/messages">
-  <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
-  <textarea name="body" placeholder="Post a message as Influence (visible to both creator and brand)…" required></textarea>
-  <div class="row">
-    <span class="hint">Sender will appear as <b>Influence</b>. The creator will get an email and the brand workspace will be pinged.</span>
-    <button type="submit">Send</button>
-  </div>
-</form>
-{% endif %}
-
-</div></body></html>
 """
 
 
