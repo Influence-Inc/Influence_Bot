@@ -93,13 +93,15 @@ def test_admin_view_uses_shared_chat_ui_with_admin_chrome():
     assert "composer-typing" in html     # typing indicator
     assert "react-btn" in html or "reactBtnHtml" in html  # reactions
 
-    # Admin chrome retained: breadcrumb + export + archive tools.
+    # Admin chrome: just the slim back link to the dashboard — no action
+    # buttons (export / archive / reopen were intentionally removed).
     assert "admin-bar" in html
     assert "&lsaquo; Campaign dashboard" in html
-    assert f"/admin/chats/{space.id}/export.md" in html
-    assert f"/admin/chats/{space.id}/export.json" in html
-    assert f"/admin/chats/{space.id}/archive" in html
     assert "Posting as Influence" in html
+    assert "/export.md" not in html
+    assert "/export.json" not in html
+    assert "/archive" not in html
+    assert "Reopen" not in html
 
 
 def test_admin_view_requires_login():
@@ -174,12 +176,14 @@ def test_admin_cannot_post_to_closed_chat():
     )
     assert resp.status_code == 410
 
-    # But the admin can still open the read-only record and see the tools.
+    # But the admin can still open the read-only record (back link present,
+    # composer disabled).
     view = client.get(f"/admin/chats/{space.id}", base_url=BASE)
     assert view.status_code == 200
     body = view.get_data(as_text=True)
     assert "admin-bar" in body
-    assert f"/admin/chats/{space.id}/reopen" in body  # reopen offered when closed
+    assert "&lsaquo; Campaign dashboard" in body
+    assert 'contenteditable="false"' in body  # read-only composer on a closed chat
 
 
 if __name__ == "__main__":

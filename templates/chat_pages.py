@@ -79,6 +79,11 @@ CHAT_PAGE = """\
     .bubble.recv{background:var(--recv-bg);color:var(--recv-fg)}
     .bubble.sent{background:var(--sent-bg);color:var(--sent-fg)}
     .row.sent .bubble{align-self:flex-end}
+    /* iMessage-style links: blue + underlined on the light received bubble,
+       white + underlined on the dark sent bubble so they stay readable. */
+    .bubble a.lk{text-decoration:underline;text-underline-offset:2px;word-break:break-all}
+    .bubble.recv a.lk{color:#007AFF}
+    .bubble.sent a.lk{color:#fff}
 
     .att-wrap{position:relative;width:fit-content;margin-top:1px}
     .att-wrap.sent{align-self:flex-end}
@@ -152,21 +157,11 @@ CHAT_PAGE = """\
     .lightbox img{max-width:100%;max-height:100%;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
     .lightbox .lb-close{position:fixed;top:14px;right:18px;width:40px;height:40px;border-radius:99px;background:rgba(255,255,255,.14);color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;line-height:1;cursor:pointer}
 
-    /* ── ADMIN BAR (admin view only) — a slim actions row under the header ── */
+    /* ── ADMIN BAR (admin view only) — a slim back-link row under the header ── */
     .admin-bar{max-width:820px;margin:0 auto;width:100%;padding:7px 20px;display:flex;align-items:center;
-      justify-content:space-between;gap:8px 14px;flex-wrap:wrap;border-bottom:.5px solid var(--line)}
+      border-bottom:.5px solid var(--line)}
     .admin-back{font-size:13px;color:#007AFF;text-decoration:none;white-space:nowrap;letter-spacing:-.01em}
     .admin-back:hover{text-decoration:underline}
-    .admin-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}
-    .admin-actions form{display:inline;margin:0}
-    .admin-actions a,.admin-actions button{font-size:12px;padding:5px 12px;border-radius:99px;text-decoration:none;
-      border:.5px solid var(--line-2);background:#fff;color:#3C3C43;cursor:pointer;line-height:1;
-      display:inline-flex;align-items:center;white-space:nowrap;letter-spacing:-.005em}
-    .admin-actions a:hover,.admin-actions button:hover{background:#F2F2F7}
-    .admin-actions .danger{color:#FF3B30;border-color:rgba(255,59,48,.28)}
-    .admin-actions .danger:hover{background:#FFF1F0}
-    .admin-actions .primary{color:#fff;background:var(--sent-bg);border-color:var(--sent-bg)}
-    .admin-actions .primary:hover{background:#000}
 
     @media (max-width:640px){
       .admin-bar{padding:7px 12px}
@@ -213,24 +208,9 @@ CHAT_PAGE = """\
     </div>
 
     {% if is_admin %}
-    <!-- ADMIN BAR — slim back + tools row that reads as a subnav under the header -->
+    <!-- ADMIN BAR — slim back link that reads as a subnav under the header -->
     <div class="admin-bar">
       <a class="admin-back" href="/admin/chats">&lsaquo; Campaign dashboard</a>
-      <div class="admin-actions">
-        <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
-        <a href="/admin/chats/{{ space.id }}/export.json" download>Export JSON</a>
-        {% if space.status == 'active' %}
-          <form method="POST" action="/admin/chats/{{ space.id }}/archive">
-            <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
-            <button type="submit" class="danger" onclick="return confirm('Archive this chat? Both parties will lose access until it is reopened.');">Archive</button>
-          </form>
-        {% else %}
-          <form method="POST" action="/admin/chats/{{ space.id }}/reopen">
-            <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
-            <button type="submit" class="primary">Reopen</button>
-          </form>
-        {% endif %}
-      </div>
     </div>
     {% endif %}
 
@@ -320,6 +300,34 @@ CHAT_PAGE = """\
     });
   }
 
+  // Turn bare http(s):// URLs in a message body into iMessage-style links.
+  // Works on the RAW text (not pre-escaped HTML): each non-URL span and each
+  // URL is escaped independently, so the output stays XSS-safe. Only http/https
+  // are matched, so javascript:/data: schemes can never become an anchor.
+  var URL_RE = /(https?:\/\/[^\s]+)/gi;
+  function linkify(text){
+    text = String(text || '');
+    var out = '', last = 0, m;
+    URL_RE.lastIndex = 0;
+    while((m = URL_RE.exec(text)) !== null){
+      out += escapeHtml(text.slice(last, m.index));
+      var url = m[0];
+      // Trailing punctuation usually isn't part of the URL (end of sentence,
+      // closing bracket, etc.) — peel it off so it renders outside the link.
+      var trail = '';
+      var tm = url.match(/[.,!?;:'")\\]}>]+$/);
+      if(tm){ trail = tm[0]; url = url.slice(0, url.length - trail.length); }
+      if(url){
+        var safe = escapeHtml(url);
+        out += '<a class="lk" href="' + safe + '" target="_blank" rel="noopener noreferrer nofollow">' + safe + '</a>';
+      }
+      out += escapeHtml(trail);
+      last = m.index + m[0].length;
+    }
+    out += escapeHtml(text.slice(last));
+    return out;
+  }
+
   function initials(name){
     var s = String(name || '').trim().replace(/^@+/, '');
     if(!s) return 'U';
@@ -385,7 +393,7 @@ CHAT_PAGE = """\
     var html = '';
     if(hasBody){
       html += '<div class="bubble ' + (mine ? 'sent' : 'recv') + '">' +
-        escapeHtml(bodyText) + rbtn + pill + '</div>';
+        linkify(bodyText) + rbtn + pill + '</div>';
     }
     for(var i=0;i<atts.length;i++){
       var a = atts[i];
