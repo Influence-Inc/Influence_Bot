@@ -274,6 +274,13 @@ CHAT_PAGE = """\
   var lightbox = document.getElementById('lightbox');
   var lbImg = document.getElementById('lbImg');
 
+  // Admin API calls carry ?as=admin so the server acts on the admin identity
+  // even when a stale creator/brand session cookie for this space is present.
+  function withAs(url){
+    if(!isAdmin) return url;
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'as=admin';
+  }
+
   var lastId = 0;
   var initialLoaded = false;
   var readState = JSON.parse(document.getElementById('initial-read-state').textContent || '{}');
@@ -465,11 +472,14 @@ CHAT_PAGE = """\
       if(save && next && next !== raw){
         row.dataset.body = next;
         bubble.innerHTML = linkify(next) + reactBtnHtml({id:row.dataset.id}) + pillHtml;
-        fetch('/chat/' + spaceSlug + '/messages/' + row.dataset.id + '/edit', {
+        // If the server rejects the edit, put the original text back so the UI
+        // never shows a change that didn't persist.
+        function revert(){ row.dataset.body = raw; rebuildBubble(row, raw); }
+        fetch(withAs('/chat/' + spaceSlug + '/messages/' + row.dataset.id + '/edit'), {
           method:'POST', credentials:'same-origin',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({body: next}),
-        }).catch(function(){});
+        }).then(function(r){ if(!r.ok) revert(); }).catch(revert);
       } else {
         bubble.innerHTML = linkify(raw) + reactBtnHtml({id:row.dataset.id}) + pillHtml;
       }
@@ -549,7 +559,7 @@ CHAT_PAGE = """\
 
   function sendRead(){
     if(!lastId) return;
-    fetch('/chat/' + spaceSlug + '/read', {
+    fetch(withAs('/chat/' + spaceSlug + '/read'), {
       method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({up_to:lastId}),
@@ -558,7 +568,7 @@ CHAT_PAGE = """\
 
   async function backfill(){
     try{
-      var r = await fetch('/chat/' + spaceSlug + '/messages?since=' + lastId, {credentials:'same-origin'});
+      var r = await fetch(withAs('/chat/' + spaceSlug + '/messages?since=' + lastId), {credentials:'same-origin'});
       if(!r.ok) return;
       var data = await r.json();
       if(data.messages && data.messages.length){
@@ -597,7 +607,7 @@ CHAT_PAGE = """\
   var sse = null;
   function connectSSE(){
     if(typeof EventSource === 'undefined') return;
-    try{ sse = new EventSource('/chat/' + spaceSlug + '/stream'); }catch(e){ return; }
+    try{ sse = new EventSource(withAs('/chat/' + spaceSlug + '/stream')); }catch(e){ return; }
     sse.addEventListener('hello', function(){ backfill(); });
     sse.addEventListener('message', function(ev){
       try{
@@ -659,7 +669,7 @@ CHAT_PAGE = """\
     if(file) form.append('attachment', file);
     sendBtn.disabled = true;
     try{
-      var r = await fetch('/chat/' + spaceSlug + '/messages', {method:'POST', credentials:'same-origin', body:form});
+      var r = await fetch(withAs('/chat/' + spaceSlug + '/messages'), {method:'POST', credentials:'same-origin', body:form});
       if(r.ok) clearBody();
     }finally{ sendBtn.disabled = archived; }
   }
@@ -672,7 +682,7 @@ CHAT_PAGE = """\
     var now = Date.now();
     if(now - lastTypingPing < 2000) return;
     lastTypingPing = now;
-    fetch('/chat/' + spaceSlug + '/typing', {method:'POST', credentials:'same-origin'}).catch(function(){});
+    fetch(withAs('/chat/' + spaceSlug + '/typing'), {method:'POST', credentials:'same-origin'}).catch(function(){});
   }
 
   editable.addEventListener('input', function(){ updateEmptyState(); renderTyping(); });
@@ -710,7 +720,7 @@ CHAT_PAGE = """\
     var emoji = e.target.textContent;
     emojiPop.style.display = 'none';
     if(emojiTargetMsg == null) return;
-    fetch('/chat/' + spaceSlug + '/messages/' + emojiTargetMsg + '/react', {
+    fetch(withAs('/chat/' + spaceSlug + '/messages/' + emojiTargetMsg + '/react'), {
       method:'POST', credentials:'same-origin',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({emoji:emoji}),

@@ -157,7 +157,17 @@ def _require_session_for_space(space_id: int):
     authenticated admin gets an :class:`_AdminSession` stand-in so the admin
     can use the same message/react/typing/read/SSE endpoints that power the
     creator and brand UI — acting as party ``admin`` on any space.
+
+    Exception: the admin chat page tags its requests with ``?as=admin``. When
+    that flag is present *and* the caller holds a valid admin cookie, the admin
+    identity wins even if a stale creator/brand session cookie for this space
+    is also in the jar (e.g. the admin previously opened the chat via a magic
+    link). Without this, admin posts would be misattributed and admin-only
+    actions like silent edit would be wrongly rejected. The flag is inert for
+    anyone without a real admin cookie, so it grants no privilege on its own.
     """
+    if request.args.get("as") == "admin" and _is_admin():
+        return _AdminSession(space_id), None
     cookie = request.cookies.get(SESSION_COOKIE)
     sess = load_session(cookie)
     if sess is not None and sess.chat_space_id == space_id:
