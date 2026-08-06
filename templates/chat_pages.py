@@ -79,6 +79,11 @@ CHAT_PAGE = """\
     .bubble.recv{background:var(--recv-bg);color:var(--recv-fg)}
     .bubble.sent{background:var(--sent-bg);color:var(--sent-fg)}
     .row.sent .bubble{align-self:flex-end}
+    /* iMessage-style links: blue + underlined on the light received bubble,
+       white + underlined on the dark sent bubble so they stay readable. */
+    .bubble a.lk{text-decoration:underline;text-underline-offset:2px;word-break:break-all}
+    .bubble.recv a.lk{color:#007AFF}
+    .bubble.sent a.lk{color:#fff}
 
     .att-wrap{position:relative;width:fit-content;margin-top:1px}
     .att-wrap.sent{align-self:flex-end}
@@ -295,6 +300,34 @@ CHAT_PAGE = """\
     });
   }
 
+  // Turn bare http(s):// URLs in a message body into iMessage-style links.
+  // Works on the RAW text (not pre-escaped HTML): each non-URL span and each
+  // URL is escaped independently, so the output stays XSS-safe. Only http/https
+  // are matched, so javascript:/data: schemes can never become an anchor.
+  var URL_RE = /(https?:\/\/[^\s]+)/gi;
+  function linkify(text){
+    text = String(text || '');
+    var out = '', last = 0, m;
+    URL_RE.lastIndex = 0;
+    while((m = URL_RE.exec(text)) !== null){
+      out += escapeHtml(text.slice(last, m.index));
+      var url = m[0];
+      // Trailing punctuation usually isn't part of the URL (end of sentence,
+      // closing bracket, etc.) — peel it off so it renders outside the link.
+      var trail = '';
+      var tm = url.match(/[.,!?;:'")\\]}>]+$/);
+      if(tm){ trail = tm[0]; url = url.slice(0, url.length - trail.length); }
+      if(url){
+        var safe = escapeHtml(url);
+        out += '<a class="lk" href="' + safe + '" target="_blank" rel="noopener noreferrer nofollow">' + safe + '</a>';
+      }
+      out += escapeHtml(trail);
+      last = m.index + m[0].length;
+    }
+    out += escapeHtml(text.slice(last));
+    return out;
+  }
+
   function initials(name){
     var s = String(name || '').trim().replace(/^@+/, '');
     if(!s) return 'U';
@@ -360,7 +393,7 @@ CHAT_PAGE = """\
     var html = '';
     if(hasBody){
       html += '<div class="bubble ' + (mine ? 'sent' : 'recv') + '">' +
-        escapeHtml(bodyText) + rbtn + pill + '</div>';
+        linkify(bodyText) + rbtn + pill + '</div>';
     }
     for(var i=0;i<atts.length;i++){
       var a = atts[i];
