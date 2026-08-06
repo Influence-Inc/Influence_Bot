@@ -93,15 +93,14 @@ def test_admin_view_uses_shared_chat_ui_with_admin_chrome():
     assert "composer-typing" in html     # typing indicator
     assert "react-btn" in html or "reactBtnHtml" in html  # reactions
 
-    # Admin chrome: just the slim back link to the dashboard — no action
-    # buttons (export / archive / reopen were intentionally removed).
-    assert "admin-bar" in html
-    assert "&lsaquo; Campaign dashboard" in html
+    # No admin chrome at all now — the admin view is the shared chat UI,
+    # distinguished only by the "admin" self-party and the composer hint.
     assert "Posting as Influence" in html
+    assert "admin-bar" not in html
+    assert "Campaign dashboard" not in html
     assert "/export.md" not in html
     assert "/export.json" not in html
-    assert "/archive" not in html
-    assert "Reopen" not in html
+    assert "/admin/chats/%s/archive" % space.id not in html
 
 
 def test_admin_view_requires_login():
@@ -176,13 +175,11 @@ def test_admin_cannot_post_to_closed_chat():
     )
     assert resp.status_code == 410
 
-    # But the admin can still open the read-only record (back link present,
-    # composer disabled).
+    # But the admin can still open the read-only record (composer disabled).
     view = client.get(f"/admin/chats/{space.id}", base_url=BASE)
     assert view.status_code == 200
     body = view.get_data(as_text=True)
-    assert "admin-bar" in body
-    assert "&lsaquo; Campaign dashboard" in body
+    assert 'data-self-party="admin"' in body
     assert 'contenteditable="false"' in body  # read-only composer on a closed chat
 
 
