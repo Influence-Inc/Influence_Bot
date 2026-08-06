@@ -152,24 +152,24 @@ CHAT_PAGE = """\
     .lightbox img{max-width:100%;max-height:100%;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
     .lightbox .lb-close{position:fixed;top:14px;right:18px;width:40px;height:40px;border-radius:99px;background:rgba(255,255,255,.14);color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;line-height:1;cursor:pointer}
 
-    /* ── ADMIN BAR (admin view only) ── */
-    .admin-bar{background:#F9FAFB;border-bottom:.5px solid var(--line)}
-    .admin-bar-inner{max-width:820px;margin:0 auto;width:100%;padding:10px 20px;display:flex;flex-direction:column;gap:7px}
-    .admin-crumbs{font-size:12px}
-    .admin-crumbs a{color:#1d4ed8;text-decoration:none}
-    .admin-crumbs a:hover{text-decoration:underline}
-    .admin-meta{font-size:12px;color:var(--muted);letter-spacing:-.005em;word-break:break-word;line-height:1.45}
-    .admin-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-    .admin-toolbar form{display:inline;margin:0}
-    .admin-toolbar a,.admin-toolbar button{font-size:12.5px;padding:6px 11px;border-radius:8px;text-decoration:none;
-      border:.5px solid var(--line-2);background:#fff;color:#1f2937;cursor:pointer;line-height:1;min-height:32px;
-      display:inline-flex;align-items:center}
-    .admin-toolbar .danger{color:#991b1b;border-color:#fecaca;background:#fff1f2}
-    .admin-toolbar .primary{color:#fff;background:#111827;border-color:#111827}
+    /* ── ADMIN BAR (admin view only) — a slim actions row under the header ── */
+    .admin-bar{max-width:820px;margin:0 auto;width:100%;padding:7px 20px;display:flex;align-items:center;
+      justify-content:space-between;gap:8px 14px;flex-wrap:wrap;border-bottom:.5px solid var(--line)}
+    .admin-back{font-size:13px;color:#007AFF;text-decoration:none;white-space:nowrap;letter-spacing:-.01em}
+    .admin-back:hover{text-decoration:underline}
+    .admin-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}
+    .admin-actions form{display:inline;margin:0}
+    .admin-actions a,.admin-actions button{font-size:12px;padding:5px 12px;border-radius:99px;text-decoration:none;
+      border:.5px solid var(--line-2);background:#fff;color:#3C3C43;cursor:pointer;line-height:1;
+      display:inline-flex;align-items:center;white-space:nowrap;letter-spacing:-.005em}
+    .admin-actions a:hover,.admin-actions button:hover{background:#F2F2F7}
+    .admin-actions .danger{color:#FF3B30;border-color:rgba(255,59,48,.28)}
+    .admin-actions .danger:hover{background:#FFF1F0}
+    .admin-actions .primary{color:#fff;background:var(--sent-bg);border-color:var(--sent-bg)}
+    .admin-actions .primary:hover{background:#000}
 
     @media (max-width:640px){
-      .admin-bar-inner{padding:9px 12px}
-      .admin-toolbar a,.admin-toolbar button{font-size:12px;padding:6px 10px}
+      .admin-bar{padding:7px 12px}
       .hdr-inner{padding:9px 12px 11px}
       .av.lg{width:38px;height:38px;font-size:13px}
       .header-title{font-size:14px}
@@ -213,26 +213,23 @@ CHAT_PAGE = """\
     </div>
 
     {% if is_admin %}
-    <!-- ADMIN BAR — breadcrumb, metadata, and the same tools as the old admin view -->
+    <!-- ADMIN BAR — slim back + tools row that reads as a subnav under the header -->
     <div class="admin-bar">
-      <div class="admin-bar-inner">
-        <div class="admin-crumbs"><a href="/admin/chats">&larr; Campaign dashboard</a></div>
-        <div class="admin-meta">Campaign {{ space.campaign_name or '—' }} &middot; Brand {{ space.brand_name or '—' }} &middot; Creator @{{ space.creator_username }}{% if space.creator_email %} ({{ space.creator_email }}){% endif %} &middot; status: {{ space.status }} &middot; created {{ space.created_at.strftime('%Y-%m-%d %H:%M') if space.created_at else '—' }}</div>
-        <div class="admin-toolbar">
-          <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
-          <a href="/admin/chats/{{ space.id }}/export.json" download>Export JSON</a>
-          {% if space.status == 'active' %}
-            <form method="POST" action="/admin/chats/{{ space.id }}/archive">
-              <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
-              <button type="submit" class="danger" onclick="return confirm('Archive this chat? Both parties will lose access until it is reopened.');">Archive</button>
-            </form>
-          {% else %}
-            <form method="POST" action="/admin/chats/{{ space.id }}/reopen">
-              <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
-              <button type="submit" class="primary">Reopen</button>
-            </form>
-          {% endif %}
-        </div>
+      <a class="admin-back" href="/admin/chats">&lsaquo; Campaign dashboard</a>
+      <div class="admin-actions">
+        <a href="/admin/chats/{{ space.id }}/export.md" download>Export Markdown</a>
+        <a href="/admin/chats/{{ space.id }}/export.json" download>Export JSON</a>
+        {% if space.status == 'active' %}
+          <form method="POST" action="/admin/chats/{{ space.id }}/archive">
+            <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+            <button type="submit" class="danger" onclick="return confirm('Archive this chat? Both parties will lose access until it is reopened.');">Archive</button>
+          </form>
+        {% else %}
+          <form method="POST" action="/admin/chats/{{ space.id }}/reopen">
+            <input type="hidden" name="redirect" value="/admin/chats/{{ space.id }}">
+            <button type="submit" class="primary">Reopen</button>
+          </form>
+        {% endif %}
       </div>
     </div>
     {% endif %}
