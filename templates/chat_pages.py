@@ -157,14 +157,7 @@ CHAT_PAGE = """\
     .lightbox img{max-width:100%;max-height:100%;border-radius:10px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
     .lightbox .lb-close{position:fixed;top:14px;right:18px;width:40px;height:40px;border-radius:99px;background:rgba(255,255,255,.14);color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;line-height:1;cursor:pointer}
 
-    /* ── ADMIN BAR (admin view only) — a slim back-link row under the header ── */
-    .admin-bar{max-width:820px;margin:0 auto;width:100%;padding:7px 20px;display:flex;align-items:center;
-      border-bottom:.5px solid var(--line)}
-    .admin-back{font-size:13px;color:#007AFF;text-decoration:none;white-space:nowrap;letter-spacing:-.01em}
-    .admin-back:hover{text-decoration:underline}
-
     @media (max-width:640px){
-      .admin-bar{padding:7px 12px}
       .hdr-inner{padding:9px 12px 11px}
       .av.lg{width:38px;height:38px;font-size:13px}
       .header-title{font-size:14px}
@@ -206,13 +199,6 @@ CHAT_PAGE = """\
         <div class="header-sub">3 people &middot; {{ space.campaign_name or space.brand_name or 'Campaign' }}</div>
       </div>
     </div>
-
-    {% if is_admin %}
-    <!-- ADMIN BAR — slim back link that reads as a subnav under the header -->
-    <div class="admin-bar">
-      <a class="admin-back" href="/admin/chats">&lsaquo; Campaign dashboard</a>
-    </div>
-    {% endif %}
 
     {% if is_admin %}
       {% if space.status == 'archived' %}
