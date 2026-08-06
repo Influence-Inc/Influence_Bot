@@ -258,6 +258,90 @@ def test_edit_requires_admin():
     assert chat_service.list_messages(chat_space_id=space.id)[0]["body"] == "hi"
 
 
+def test_admin_edit_wins_over_stale_creator_session_cookie():
+    # Repro of the "edits don't save" bug: the admin's browser also holds a
+    # creator session cookie for this space (from opening a magic link), which
+    # used to make the edit resolve to the creator party and 403. With the
+    # admin page's `?as=admin` tag, the admin identity wins.
+    from utils.chat_tokens import SESSION_COOKIE, create_session
+
+    space = _make_space()
+    slug = space.public_slug
+    client = _client()
+    _login_admin(client)
+    mid = client.post(
+        f"/chat/{slug}/messages?as=admin", data={"body": "original"}, base_url=BASE
+    ).get_json()["id"]
+
+    # Add a stale creator session cookie for the same space.
+    _row, cookie = create_session(
+        chat_space_id=space.id, party="creator",
+        identifier="riu@x.com", display_name="riu",
+    )
+    client.set_cookie(SESSION_COOKIE, cookie, domain="chat.test")
+
+    # Without the flag the creator cookie wins -> 403 (the old broken behaviour).
+    bad = client.post(
+        f"/chat/{slug}/messages/{mid}/edit", json={"body": "nope"}, base_url=BASE
+    )
+    assert bad.status_code == 403
+
+    # With ?as=admin the admin identity wins -> edit persists.
+    good = client.post(
+        f"/chat/{slug}/messages/{mid}/edit?as=admin",
+        json={"body": "corrected"}, base_url=BASE,
+    )
+    assert good.status_code == 200
+    assert chat_service.list_messages(chat_space_id=space.id)[0]["body"] == "corrected"
+
+
+def test_as_admin_flag_grants_nothing_without_admin_cookie():
+    # A creator (no admin cookie) can't escalate by tacking on ?as=admin.
+    from utils.chat_tokens import SESSION_COOKIE, create_session
+
+    space = _make_space()
+    slug = space.public_slug
+    admin = _client()
+    _login_admin(admin)
+    mid = admin.post(
+        f"/chat/{slug}/messages?as=admin", data={"body": "hi"}, base_url=BASE
+    ).get_json()["id"]
+
+    _row, cookie = create_session(
+        chat_space_id=space.id, party="creator",
+        identifier="riu@x.com", display_name="riu",
+    )
+    creator = _client()
+    creator.set_cookie(SESSION_COOKIE, cookie, domain="chat.test")
+    resp = creator.post(
+        f"/chat/{slug}/messages/{mid}/edit?as=admin",
+        json={"body": "hacked"}, base_url=BASE,
+    )
+    assert resp.status_code == 403
+    assert chat_service.list_messages(chat_space_id=space.id)[0]["body"] == "hi"
+
+
+def test_admin_post_attributed_to_admin_despite_stale_cookie():
+    # The same fix keeps admin *posts* attributed to "Influence" even when a
+    # stale creator cookie is present.
+    from utils.chat_tokens import SESSION_COOKIE, create_session
+
+    space = _make_space()
+    slug = space.public_slug
+    client = _client()
+    _login_admin(client)
+    _row, cookie = create_session(
+        chat_space_id=space.id, party="creator",
+        identifier="riu@x.com", display_name="riu",
+    )
+    client.set_cookie(SESSION_COOKIE, cookie, domain="chat.test")
+
+    client.post(f"/chat/{slug}/messages?as=admin", data={"body": "from admin"}, base_url=BASE)
+    msg = chat_service.list_messages(chat_space_id=space.id)[0]
+    assert msg["party"] == "admin"
+    assert msg["sender"] == "Influence"
+
+
 def test_chat_page_js_escapes_survive_render():
     # CHAT_PAGE is a non-raw triple-quoted Python string, so a JS regex/string
     # written with a single backslash (\\n, \\r, \\t) collapses into a real
