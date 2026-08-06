@@ -558,7 +558,15 @@ CHAT_PAGE = """\
   setInterval(backfill, 30000);
 
   // ── Compose + send ──
-  function getBody(){ return (editable.textContent || '').trim(); }
+  // Read the composer as text WITH its line breaks. `textContent` would flatten
+  // the <div>/<br> nodes contenteditable creates on Enter/paste (turning a
+  // multi-line note into one run-on paragraph); `innerText` keeps them. Collapse
+  // the empty-block artefact (a single blank line comes back as \n\n\n) so one
+  // blank line stays one blank line, then trim the ends.
+  function getBody(){
+    var t = (editable.innerText || editable.textContent || '');
+    return t.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
   function updateEmptyState(){ editable.setAttribute('data-empty', getBody() ? 'false' : 'true'); }
   function clearBody(){ editable.textContent = ''; updateEmptyState(); }
 
