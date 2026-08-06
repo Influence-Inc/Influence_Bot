@@ -419,6 +419,31 @@ def chat_message_react(slug: str, message_id: int):
     return jsonify({"ok": True, "active": now_present})
 
 
+@bp.route("/chat/<slug>/messages/<int:message_id>/edit", methods=["POST"])
+def chat_message_edit(slug: str, message_id: int):
+    """Admin-only silent edit of a message body. No brand/creator notification
+    and no 'edited' indicator — the corrected text simply replaces the old one
+    and is pushed to open clients via SSE. Creator/brand sessions are rejected."""
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
+    if err is not None:
+        return err
+    if getattr(sess, "party", None) != ADMIN_PARTY:
+        return jsonify({"error": "forbidden"}), 403
+    payload = request.get_json(silent=True) or {}
+    new_body = (payload.get("body") or "").strip()
+    if not new_body:
+        return jsonify({"error": "empty"}), 400
+    ok = chat_service.edit_message(
+        message_id=message_id, chat_space_id=space.id, new_body=new_body
+    )
+    if not ok:
+        return jsonify({"error": "not_found"}), 404
+    return jsonify({"ok": True})
+
+
 @bp.route("/chat/<slug>/stream", methods=["GET"])
 def chat_stream(slug: str):
     """

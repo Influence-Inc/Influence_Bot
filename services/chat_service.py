@@ -460,6 +460,38 @@ def publish_message(message_id: int) -> None:
     _pubsub_publish(chat_space_id, "message", payload)
 
 
+def edit_message(*, message_id: int, chat_space_id: int, new_body: str) -> bool:
+    """
+    Silently replace a message's body (an admin correction).
+
+    Deliberately quiet: no out-of-band notification, no "edited" marker, and
+    no `last_message_at` bump — it just persists the new text and broadcasts an
+    `edit` event so any open client swaps the text in place. Returns False if
+    the message doesn't exist, doesn't belong to the space, or the new body is
+    empty.
+    """
+    new_body = (new_body or "").strip()
+    if not new_body:
+        return False
+    if len(new_body) > _MAX_BODY:
+        new_body = new_body[:_MAX_BODY]
+
+    db = SessionLocal()
+    try:
+        msg = db.query(ChatMessage).get(message_id)
+        if msg is None or msg.chat_space_id != chat_space_id:
+            return False
+        if msg.body == new_body:
+            return True  # no-op, but treat as success
+        msg.body = new_body
+        db.commit()
+    finally:
+        db.close()
+
+    _pubsub_publish(chat_space_id, "edit", {"message_id": message_id, "body": new_body})
+    return True
+
+
 def list_messages(
     *,
     chat_space_id: int,
