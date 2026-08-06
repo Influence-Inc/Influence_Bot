@@ -93,9 +93,9 @@ def test_admin_view_uses_shared_chat_ui_with_admin_chrome():
     assert "composer-typing" in html     # typing indicator
     assert "react-btn" in html or "reactBtnHtml" in html  # reactions
 
-    # Admin chrome retained: breadcrumb, metadata, export + archive tools.
+    # Admin chrome retained: breadcrumb + export + archive tools.
     assert "admin-bar" in html
-    assert "&larr; Campaign dashboard" in html
+    assert "&lsaquo; Campaign dashboard" in html
     assert f"/admin/chats/{space.id}/export.md" in html
     assert f"/admin/chats/{space.id}/export.json" in html
     assert f"/admin/chats/{space.id}/archive" in html
