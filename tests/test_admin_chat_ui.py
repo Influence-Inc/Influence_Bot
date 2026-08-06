@@ -183,6 +183,104 @@ def test_admin_cannot_post_to_closed_chat():
     assert 'contenteditable="false"' in body  # read-only composer on a closed chat
 
 
+def test_admin_can_silently_edit_message():
+    space = _make_space()
+    slug = space.public_slug
+    client = _client()
+    _login_admin(client)
+
+    mid = client.post(
+        f"/chat/{slug}/messages", data={"body": "orignal typo"}, base_url=BASE
+    ).get_json()["id"]
+
+    resp = client.post(
+        f"/chat/{slug}/messages/{mid}/edit",
+        json={"body": "Fixed text\nwith a second line"},
+        base_url=BASE,
+    )
+    assert resp.status_code == 200 and resp.get_json()["ok"] is True
+
+    msgs = chat_service.list_messages(chat_space_id=space.id)
+    assert msgs[0]["body"] == "Fixed text\nwith a second line"
+    # Still one message — an edit never creates a new one.
+    assert len(msgs) == 1
+
+
+def test_admin_can_edit_in_closed_chat():
+    # Silent edits are an admin correction tool, so they work even after the
+    # chat is closed (posting is blocked, editing is not).
+    space = _make_space()
+    slug = space.public_slug
+    client = _client()
+    _login_admin(client)
+    mid = client.post(
+        f"/chat/{slug}/messages", data={"body": "before"}, base_url=BASE
+    ).get_json()["id"]
+    assert chat_service.close_for_approval(space.id) is True
+
+    resp = client.post(
+        f"/chat/{slug}/messages/{mid}/edit", json={"body": "after"}, base_url=BASE
+    )
+    assert resp.status_code == 200
+    assert chat_service.list_messages(chat_space_id=space.id)[0]["body"] == "after"
+
+
+def test_edit_requires_admin():
+    space = _make_space()
+    slug = space.public_slug
+    admin = _client()
+    _login_admin(admin)
+    mid = admin.post(
+        f"/chat/{slug}/messages", data={"body": "hi"}, base_url=BASE
+    ).get_json()["id"]
+
+    # No admin cookie, no chat session at all -> rejected before the admin gate.
+    anon = _client()
+    resp = anon.post(
+        f"/chat/{slug}/messages/{mid}/edit", json={"body": "hacked"}, base_url=BASE
+    )
+    assert resp.status_code == 401
+
+    # A legitimate creator session is authenticated but not an admin -> 403.
+    from utils.chat_tokens import SESSION_COOKIE, create_session
+    _row, cookie = create_session(
+        chat_space_id=space.id, party="creator",
+        identifier="c@example.com", display_name="Creator",
+    )
+    creator = _client()
+    creator.set_cookie(SESSION_COOKIE, cookie, domain="chat.test")
+    resp = creator.post(
+        f"/chat/{slug}/messages/{mid}/edit", json={"body": "hacked"}, base_url=BASE
+    )
+    assert resp.status_code == 403
+
+    # Body untouched by either attempt.
+    assert chat_service.list_messages(chat_space_id=space.id)[0]["body"] == "hi"
+
+
+def test_chat_page_js_escapes_survive_render():
+    # CHAT_PAGE is a non-raw triple-quoted Python string, so a JS regex/string
+    # written with a single backslash (\\n, \\r, \\t) collapses into a real
+    # control char in the delivered <script> and breaks the whole page. The
+    # pure-Python suite can't execute JS, so guard the delivered bytes instead.
+    from flask import Flask, render_template_string
+    from templates.chat_pages import CHAT_PAGE
+
+    space = _make_space()
+    app = Flask(__name__)
+    with app.app_context():
+        html = render_template_string(
+            CHAT_PAGE, space=space, self_party="admin", chat_title="t",
+            initial_read_state={}, is_admin=True,
+        )
+    # No stray carriage return / other control chars leaked into the output.
+    for ch in ("\r", "\x08", "\x0b", "\x0c"):
+        assert ch not in html, f"control char {ch!r} leaked into delivered page"
+    # The newline-normalising regexes must reach the browser as real escapes.
+    assert r"replace(/\r\n/g, '\n')" in html
+    assert r"replace(/\n{3,}/g, '\n\n')" in html
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -84,6 +84,9 @@ CHAT_PAGE = """\
     .bubble a.lk{text-decoration:underline;text-underline-offset:2px;word-break:break-all}
     .bubble.recv a.lk{color:#007AFF}
     .bubble.sent a.lk{color:#fff}
+    /* admin silent-edit: bubble becomes an inline editor on double-click */
+    .bubble.editing{outline:2px solid #007AFF;outline-offset:1px;cursor:text;
+      -webkit-user-select:text;user-select:text}
 
     .att-wrap{position:relative;width:fit-content;margin-top:1px}
     .att-wrap.sent{align-self:flex-end}
@@ -235,7 +238,7 @@ CHAT_PAGE = """\
           </button>
         </div>
       </div>
-      <div class="notify-hint">{% if is_admin %}Posting as Influence — @{{ space.creator_username }} and {{ space.brand_name or 'the brand' }} will be notified{% elif self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
+      <div class="notify-hint">{% if is_admin %}Posting as Influence — @{{ space.creator_username }} and {{ space.brand_name or 'the brand' }} will be notified · double-click a message to edit it silently{% elif self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
     </div>
 
   </div>
@@ -255,6 +258,7 @@ CHAT_PAGE = """\
   var bodyEl = document.body;
   var spaceSlug = bodyEl.dataset.spaceSlug;
   var selfParty = bodyEl.dataset.selfParty;
+  var isAdmin = selfParty === 'admin';
   var archived = bodyEl.dataset.archived === 'true';
   var brandName = bodyEl.dataset.brandName || 'Brand';
   var creatorUsername = bodyEl.dataset.creatorUsername || 'Creator';
@@ -406,6 +410,79 @@ CHAT_PAGE = """\
     if(html) host.insertAdjacentHTML('beforeend', html);
   }
 
+  // ── Admin silent edit ──────────────────────────────────────────────────
+  // Admins can double-click a text bubble to correct its wording in place.
+  // The edit is quiet by design: no notification and no "edited" marker — the
+  // text just changes. `editingRow` guards against re-entrancy and against a
+  // live `edit` event clobbering an in-progress edit.
+  var editingRow = null;
+
+  // Re-render a bubble's body while keeping its react button + reaction pill.
+  function rebuildBubble(row, body){
+    var bubble = row.querySelector('.bubble');
+    if(!bubble) return;
+    var pill = bubble.querySelector('.react-pill');
+    bubble.innerHTML = linkify(body) + reactBtnHtml({id:row.dataset.id}) +
+                       (pill ? pill.outerHTML : '');
+  }
+
+  function applyEdit(msgId, body){
+    if(typeof body !== 'string') return;
+    var row = messagesEl.querySelector('[data-id="' + msgId + '"]');
+    if(!row || row === editingRow) return;
+    row.dataset.body = body;
+    rebuildBubble(row, body);
+  }
+
+  function beginEdit(row){
+    if(!isAdmin || !row || editingRow) return;
+    var bubble = row.querySelector('.bubble');
+    if(!bubble) return;  // image-only messages have no text to edit
+    editingRow = row;
+    var raw = row.dataset.body || '';
+    var pill = bubble.querySelector('.react-pill');
+    var pillHtml = pill ? pill.outerHTML : '';
+
+    bubble.classList.add('editing');
+    bubble.textContent = raw;                       // strip links/buttons while editing
+    bubble.setAttribute('contenteditable', 'true');
+    bubble.focus();
+    try{
+      var range = document.createRange(); range.selectNodeContents(bubble);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }catch(e){}
+
+    var done = false;
+    function finish(save){
+      if(done) return; done = true;
+      bubble.removeEventListener('keydown', onKey);
+      bubble.removeEventListener('blur', onBlur);
+      bubble.removeAttribute('contenteditable');
+      bubble.classList.remove('editing');
+      editingRow = null;
+      // innerText keeps the line breaks; normalise the empty-block artefact.
+      var next = (bubble.innerText || '').replace(/\\r\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+      if(save && next && next !== raw){
+        row.dataset.body = next;
+        bubble.innerHTML = linkify(next) + reactBtnHtml({id:row.dataset.id}) + pillHtml;
+        fetch('/chat/' + spaceSlug + '/messages/' + row.dataset.id + '/edit', {
+          method:'POST', credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({body: next}),
+        }).catch(function(){});
+      } else {
+        bubble.innerHTML = linkify(raw) + reactBtnHtml({id:row.dataset.id}) + pillHtml;
+      }
+    }
+    function onKey(e){
+      if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); finish(true); }
+      else if(e.key === 'Escape'){ e.preventDefault(); finish(false); }
+    }
+    function onBlur(){ finish(true); }
+    bubble.addEventListener('keydown', onKey);
+    bubble.addEventListener('blur', onBlur);
+  }
+
   function updateReceipts(){
     var sent = messagesEl.querySelectorAll('.row.sent');
     for(var i=0;i<sent.length;i++){
@@ -445,6 +522,7 @@ CHAT_PAGE = """\
     row.dataset.id = m.id;
     row.dataset.party = m.party;
     row.dataset.sender = m.sender || '';
+    row.dataset.body = m.body || '';  // raw text, so an admin edit can prefill it
 
     if(mine){
       row.className = 'row sent' + ((prevAppend && !freshDay && prevAppend.mine) ? '' : ' fresh');
@@ -534,6 +612,9 @@ CHAT_PAGE = """\
     sse.addEventListener('reaction', function(ev){
       try{ var d = JSON.parse(ev.data); applyReactions(d.message_id, d.counts || {}); }catch(e){}
     });
+    sse.addEventListener('edit', function(ev){
+      try{ var d = JSON.parse(ev.data); applyEdit(d.message_id, d.body); }catch(e){}
+    });
     sse.addEventListener('read', function(ev){
       try{
         var d = JSON.parse(ev.data);
@@ -561,11 +642,11 @@ CHAT_PAGE = """\
   // Read the composer as text WITH its line breaks. `textContent` would flatten
   // the <div>/<br> nodes contenteditable creates on Enter/paste (turning a
   // multi-line note into one run-on paragraph); `innerText` keeps them. Collapse
-  // the empty-block artefact (a single blank line comes back as \n\n\n) so one
-  // blank line stays one blank line, then trim the ends.
+  // the empty-block artefact (a single blank line comes back as three newlines)
+  // so one blank line stays one blank line, then trim the ends.
   function getBody(){
     var t = (editable.innerText || editable.textContent || '');
-    return t.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    return t.replace(/\\r\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
   }
   function updateEmptyState(){ editable.setAttribute('data-empty', getBody() ? 'false' : 'true'); }
   function clearBody(){ editable.textContent = ''; updateEmptyState(); }
@@ -683,6 +764,18 @@ CHAT_PAGE = """\
   messagesEl.addEventListener('touchend', function(e){ if(lpFired) e.preventDefault(); cancelLongPress(); });
   messagesEl.addEventListener('touchcancel', cancelLongPress);
   messagesEl.addEventListener('contextmenu', function(e){ if(bubbleHostFrom(e.target)) e.preventDefault(); });
+
+  // Admin-only: double-click a text bubble to silently edit it in place.
+  if(isAdmin){
+    messagesEl.addEventListener('dblclick', function(e){
+      var bubble = e.target.closest('.bubble');
+      if(!bubble) return;
+      var row = bubble.closest('.row');
+      if(!row) return;
+      e.preventDefault();
+      beginEdit(row);
+    });
+  }
 
   // ── Image lightbox (tap image to view full-screen, tap/Esc to close) ──
   function openLightbox(src, alt){
