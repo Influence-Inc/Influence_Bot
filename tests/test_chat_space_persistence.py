@@ -331,9 +331,10 @@ def _sweep_collecting_approvals():
     return approved
 
 
-def test_the_draft_card_alone_does_not_pause_the_silence_clock():
-    # The card is written by the bot, not by a person — if it counted as
-    # activity, nothing would ever auto-approve once this feature shipped.
+def test_the_bots_own_event_rows_do_not_pause_the_clock():
+    # The card and the decision notice are written by the bot, not sent by
+    # anyone — if they counted as activity, nothing would ever auto-approve
+    # once this feature shipped.
     _reset()
     stale = datetime.now(timezone.utc) - timedelta(hours=25)
     review_id = _submit_review(submitted_at=stale)
@@ -346,20 +347,33 @@ def test_the_draft_card_alone_does_not_pause_the_silence_clock():
     assert _sweep_collecting_approvals() == [review_id]
 
 
-def test_someone_talking_after_the_draft_pauses_the_clock():
+def test_a_brand_message_pauses_the_clock():
     _reset()
     stale = datetime.now(timezone.utc) - timedelta(hours=25)
     review_id = _submit_review(submitted_at=stale)
     space = chat_service.get_or_create_for_review(review_id)
     chat_service.post_review_submission_event(review_id, chat_space_id=space.id)
-    _post_text(space.id)
+    _post_text(space.id, party="brand")
 
     assert _sweep_collecting_approvals() == []
 
 
-def test_talk_about_an_earlier_draft_does_not_keep_a_later_one_alive():
-    # Draft 1 was discussed two days ago; draft 2 has been sitting in
-    # silence for 25h and should still auto-approve.
+def test_the_creators_own_messages_never_pause_the_clock():
+    _reset()
+    stale = datetime.now(timezone.utc) - timedelta(hours=25)
+    review_id = _submit_review(submitted_at=stale)
+    space = chat_service.get_or_create_for_review(review_id)
+    chat_service.post_review_submission_event(review_id, chat_space_id=space.id)
+    _post_text(space.id, party="creator")
+
+    assert _sweep_collecting_approvals() == [review_id]
+
+
+def test_an_engaged_brand_keeps_every_later_draft_out_of_auto_approval():
+    # Activity counts campaign-wide, not per draft. The brand replied about
+    # draft 1 two days ago; draft 2 has sat in silence for 25h and still
+    # does not auto-approve, because this brand demonstrably reviews its
+    # creators by hand.
     _reset()
     now = datetime.now(timezone.utc)
     r1 = _submit_review(
@@ -368,15 +382,13 @@ def test_talk_about_an_earlier_draft_does_not_keep_a_later_one_alive():
         decided_at=now - timedelta(hours=49),
     )
     space = chat_service.get_or_create_for_review(r1)
-    _post_text(space.id, created_at=now - timedelta(hours=48))
+    _post_text(space.id, party="brand", created_at=now - timedelta(hours=48))
 
     r2 = _submit_review(submitted_at=now - timedelta(hours=25))
     chat_service.get_or_create_for_review(r2)
     chat_service.post_review_submission_event(r2, chat_space_id=space.id)
 
-    # r1 saw a reply after its decision, so it is not swept; r2 has heard
-    # nothing since it was submitted.
-    assert _sweep_collecting_approvals() == [r2]
+    assert _sweep_collecting_approvals() == []
 
 
 # ---------------------------------------------------------------------------

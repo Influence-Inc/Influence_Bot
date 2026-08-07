@@ -3,10 +3,12 @@ Tests for services.review_approval.run_auto_approval_sweep candidate
 selection.
 
 Focus is the "no action in 24h" path: a review the brand never acted on
-should auto-approve after 24h ONLY when its chat space has no activity.
-Any message in the space (from anyone) pauses that silence clock, because
-the chat space is pre-created at review-post time and can carry a message
-before the brand clicks a button.
+should auto-approve after 24h ONLY when nobody but the creator has posted
+in its chat space. A message from the brand or the INFLUENCE team pauses
+that silence clock, because the chat space is pre-created at review-post
+time and can carry a message before the brand clicks a button. The
+creator's own messages don't pause it — otherwise a creator could hold
+their own draft out of auto-approval by chasing it.
 
 Run with `python -m pytest tests/test_auto_approval_sweep.py`, or directly
 with `python tests/test_auto_approval_sweep.py`.
@@ -121,15 +123,37 @@ def test_no_action_auto_approves_when_chat_space_is_empty():
 
 
 def test_no_action_paused_when_we_posted_before_the_brand():
-    # The new behavior: a message we send in the pre-created chat space —
-    # while the brand has stayed silent and clicked nothing — pauses the
-    # no-action clock so the video is NOT auto-approved.
+    # A message we send in the pre-created chat space — while the brand has
+    # stayed silent and clicked nothing — pauses the no-action clock so the
+    # video is NOT auto-approved.
+    _reset()
+    rid = _make_review()
+    space_id = _make_space(rid)
+    _post(space_id, party="admin")
+
+    assert _sweep_collecting_approvals() == []
+
+
+def test_no_action_paused_when_the_brand_posted():
+    _reset()
+    rid = _make_review()
+    space_id = _make_space(rid)
+    _post(space_id, party="brand")
+
+    assert _sweep_collecting_approvals() == []
+
+
+def test_the_creators_own_messages_do_not_pause_the_clock():
+    # The brand has said nothing at all — the creator chasing their own
+    # draft in the chat is not "the review is being worked on", so the 24h
+    # clock keeps running.
     _reset()
     rid = _make_review()
     space_id = _make_space(rid)
     _post(space_id, party="creator")
+    _post(space_id, party="creator")
 
-    assert _sweep_collecting_approvals() == []
+    assert _sweep_collecting_approvals() == [rid]
 
 
 def test_no_action_paused_by_a_message_in_an_archived_space():
