@@ -92,6 +92,43 @@ CHAT_PAGE = """\
     .att-wrap.sent{align-self:flex-end}
     .att{display:block;width:240px;max-width:70vw;border-radius:18px;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.08);cursor:zoom-in}
 
+    /* ── DRAFT CARD ──
+       A new video submitted for review, rendered as an iMessage rich-link
+       card: media panel on top, bubble-coloured caption band underneath. */
+    .rcard-wrap{position:relative;width:fit-content;margin-top:2px}
+    .rcard-wrap.sent{align-self:flex-end}
+    .rcard{display:block;width:268px;max-width:74vw;border-radius:18px;overflow:hidden;
+      text-decoration:none;color:inherit;background:var(--recv-bg);
+      box-shadow:inset 0 0 0 .5px rgba(0,0,0,.10);
+      transition:transform .14s cubic-bezier(.32,.72,0,1)}
+    a.rcard:active{transform:scale(.98)}
+    .rcard-media{position:relative;height:134px;display:flex;align-items:center;justify-content:center;
+      background:radial-gradient(120% 130% at 26% 8%,#3A3A3C 0%,#1C1C1E 58%,#0B0B0C 100%)}
+    .rcard-media:after{content:'';position:absolute;inset:0;
+      background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(0,0,0,.18))}
+    .rcard-play{position:relative;z-index:1;width:54px;height:54px;border-radius:99px;color:#fff;
+      background:rgba(255,255,255,.18);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+      display:flex;align-items:center;justify-content:center;box-shadow:0 1px 14px rgba(0,0,0,.30)}
+    .rcard-play svg{margin-left:2px}
+    .rcard-badge{position:absolute;z-index:1;top:10px;left:10px;font-size:10px;font-weight:600;
+      letter-spacing:.04em;text-transform:uppercase;color:#fff;background:rgba(255,255,255,.20);
+      -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+      border-radius:99px;padding:4px 8px;line-height:1}
+    .rcard-foot{padding:9px 14px 11px;background:var(--recv-bg);color:var(--recv-fg)}
+    .rcard-wrap.sent .rcard-foot{background:var(--sent-bg);color:var(--sent-fg)}
+    .rcard-title{font-size:14.5px;font-weight:600;letter-spacing:-.015em;line-height:1.25}
+    .rcard-sub{font-size:12.5px;line-height:1.3;margin-top:2px;color:var(--muted);letter-spacing:-.005em}
+    .rcard-wrap.sent .rcard-sub{color:rgba(255,255,255,.60)}
+
+    /* ── SYSTEM NOTICE ── centred, unobtrusive: "Draft 2 approved". */
+    .row.sys-row{align-self:center;max-width:88%;margin-top:16px}
+    .sys{display:flex;align-items:center;justify-content:center;gap:5px;font-size:11.5px;
+      color:var(--muted);letter-spacing:-.005em;text-align:center}
+    .sys .sys-dot{display:inline-flex;align-items:center;justify-content:center;
+      width:15px;height:15px;border-radius:99px;color:#fff;flex-shrink:0}
+    .sys.ok .sys-dot{background:#34C759}
+    .sys.chg .sys-dot{background:#FF9F0A}
+
     /* hover react affordance */
     .react-btn{position:absolute;top:50%;transform:translateY(-50%) scale(.9);opacity:0;pointer-events:none;
       transition:opacity .12s ease,transform .12s ease;width:28px;height:28px;border-radius:99px;background:#fff;
@@ -109,7 +146,7 @@ CHAT_PAGE = """\
     /* Touch devices have no hover: long-press a bubble to react. Suppress the
        native selection / callout so it doesn't fight the long-press gesture. */
     @media (hover:none){
-      .bubble,.att-wrap{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+      .bubble,.att-wrap,.rcard-wrap{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
     }
 
     /* tapback pill */
@@ -171,6 +208,8 @@ CHAT_PAGE = """\
       .bubble{font-size:15px;padding:8px 14px;max-width:100%}
       .react-btn{display:none !important}
       .att{width:200px}
+      .rcard{width:244px}
+      .rcard-media{height:122px}
       .composer-row{padding:8px 10px 6px;gap:8px}
       .attach-btn{width:34px;height:34px}
       .attach-btn svg{width:18px;height:18px}
@@ -290,6 +329,9 @@ CHAT_PAGE = """\
   var prevAppend = null;
 
   var SMILEY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg>';
+  var PLAY = '<svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.79-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z"></path></svg>';
+  var TICK = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+  var PENCIL = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"></path></svg>';
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, function(c){
@@ -378,13 +420,76 @@ CHAT_PAGE = """\
     return '<button class="react-btn" data-msg="' + m.id + '" title="React">' + SMILEY + '</button>';
   }
 
-  // Builds the bubble(s) + attachment(s) for one message. The hover react
-  // button and tapback pill are attached to the "primary" element (the text
-  // bubble when there is text, else the first image).
+  // ── Draft card ────────────────────────────────────────────────────────
+  // A `review_submission` message is a new video sent for review. It renders
+  // as a rich card rather than a bubble, so a resubmission is unmistakable
+  // in a conversation that already has feedback in it.
+  function isHttpUrl(u){
+    var s = String(u || '').trim().toLowerCase();
+    return s.indexOf('http://') === 0 || s.indexOf('https://') === 0;
+  }
+  function hostOf(u){
+    try{
+      var h = new URL(u).hostname;
+      return h.indexOf('www.') === 0 ? h.slice(4) : h;
+    }catch(e){ return ''; }
+  }
+  // Name the destination the way the creator thinks of it.
+  function sourceLabel(host){
+    if(!host) return 'Video';
+    if(host.indexOf('drive.google') === 0 || host.indexOf('docs.google') === 0) return 'Google Drive';
+    if(host.indexOf('dropbox') >= 0) return 'Dropbox';
+    if(host.indexOf('frame.io') >= 0) return 'Frame.io';
+    if(host.indexOf('wetransfer') >= 0) return 'WeTransfer';
+    if(host.indexOf('youtu') >= 0) return 'YouTube';
+    if(host.indexOf('vimeo') >= 0) return 'Vimeo';
+    if(host.indexOf('icloud') >= 0) return 'iCloud';
+    return host;
+  }
+  function draftNumber(ev){
+    var n = parseInt(ev.submission_number, 10);
+    return (n > 0) ? n : 1;
+  }
+  function reviewCardHtml(m){
+    var ev = m.event || {};
+    var n = draftNumber(ev);
+    var link = isHttpUrl(ev.video_link) ? String(ev.video_link).trim() : '';
+    var title = n > 1 ? 'Revised draft submitted' : 'New draft submitted';
+    var sub = link ? (sourceLabel(hostOf(link)) + ' · Tap to watch') : 'No link attached';
+    var inner =
+      '<div class="rcard-media">' +
+        '<span class="rcard-badge">Draft ' + n + '</span>' +
+        '<span class="rcard-play">' + PLAY + '</span>' +
+      '</div>' +
+      '<div class="rcard-foot">' +
+        '<div class="rcard-title">' + escapeHtml(title) + '</div>' +
+        '<div class="rcard-sub">' + escapeHtml(sub) + '</div>' +
+      '</div>';
+    if(!link) return '<div class="rcard">' + inner + '</div>';
+    return '<a class="rcard" href="' + escapeHtml(link) +
+      '" target="_blank" rel="noopener noreferrer nofollow">' + inner + '</a>';
+  }
+
+  // `review_decision` — a centred system line, the way iMessage announces
+  // something that happened to the conversation rather than in it.
+  function decisionHtml(m){
+    var ev = m.event || {};
+    var approved = ev.decision === 'approved';
+    var text = 'Draft ' + draftNumber(ev) +
+      (approved ? ' approved' : ' — changes requested');
+    return '<div class="sys ' + (approved ? 'ok' : 'chg') + '">' +
+      '<span class="sys-dot">' + (approved ? TICK : PENCIL) + '</span>' +
+      '<span>' + escapeHtml(text) + '</span></div>';
+  }
+
+  // Builds the bubble(s), draft card and attachment(s) for one message. The
+  // hover react button and tapback pill are attached to the "primary" element
+  // (the text bubble when there is text, else the card, else the first image).
   function buildContent(m, mine){
     var bodyText = (m.body || '').trim();
     var atts = m.attachments || [];
     var hasBody = !!bodyText;
+    var hasCard = m.kind === 'review_submission';
     var pill = reactionPillHtml(m);
     var rbtn = reactBtnHtml(m);
     var html = '';
@@ -392,9 +497,13 @@ CHAT_PAGE = """\
       html += '<div class="bubble ' + (mine ? 'sent' : 'recv') + '">' +
         linkify(bodyText) + rbtn + pill + '</div>';
     }
+    if(hasCard){
+      html += '<div class="rcard-wrap' + (mine ? ' sent' : '') + '">' +
+        reviewCardHtml(m) + (hasBody ? '' : (rbtn + pill)) + '</div>';
+    }
     for(var i=0;i<atts.length;i++){
       var a = atts[i];
-      var primary = !hasBody && i === 0;
+      var primary = !hasBody && !hasCard && i === 0;
       html += '<div class="att-wrap' + (mine ? ' sent' : '') + '">' +
         '<img class="att" src="/chat/attachment/' + a.id + '" alt="' + escapeHtml(a.filename || 'attachment') + '" loading="lazy">' +
         (primary ? (rbtn + pill) : '') + '</div>';
@@ -403,7 +512,8 @@ CHAT_PAGE = """\
   }
 
   function primaryHost(row){
-    return row.querySelector('.bubble') || row.querySelector('.att-wrap');
+    return row.querySelector('.bubble') || row.querySelector('.rcard-wrap') ||
+           row.querySelector('.att-wrap');
   }
 
   function applyReactions(msgId, counts){
@@ -533,6 +643,17 @@ CHAT_PAGE = """\
     row.dataset.party = m.party;
     row.dataset.sender = m.sender || '';
     row.dataset.body = m.body || '';  // raw text, so an admin edit can prefill it
+
+    // System notices sit centred on their own, belonging to neither side.
+    if(m.kind === 'review_decision'){
+      row.className = 'row sys-row';
+      row.innerHTML = decisionHtml(m);
+      messagesEl.appendChild(row);
+      prevAppend = {party:'system', sender:'', mine:false, day:dk};
+      if(m.id > lastId) lastId = m.id;
+      updateReceipts();
+      return;
+    }
 
     if(mine){
       row.className = 'row sent' + ((prevAppend && !freshDay && prevAppend.mine) ? '' : ' fresh');
@@ -738,7 +859,8 @@ CHAT_PAGE = """\
   //   • touch    — long-press a bubble to open the emoji picker
   var lpTimer = null, lpFired = false;
   function bubbleHostFrom(t){
-    return (t && t.closest) ? (t.closest('.bubble') || t.closest('.att-wrap')) : null;
+    if(!t || !t.closest) return null;
+    return t.closest('.bubble') || t.closest('.rcard-wrap') || t.closest('.att-wrap');
   }
   function openReactPickerFor(host){
     var row = host.closest('.row');

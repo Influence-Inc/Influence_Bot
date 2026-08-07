@@ -287,4 +287,6 @@ Hitting that route 302s the brand to Slack's consent screen.
 - **Escalating deadline reminders** — 3 days before -> 1 day before -> overdue, via Slack + email
 - **Reminder emails skip creators waiting on review** — the nag email is held when the videos a creator has already shared for review cover the deliverables they still owe (counted, so 1 video shared against 2 still owed still emails; a draft sent back with "Request Changes" doesn't count, and an unmet view target needs at least one video still in the pipeline). The Slack alert still posts, annotated with why no email went out
 - **Real-time webhook alerts** — Review submissions, video-link submissions, approvals (poll is the safety-net fallback)
-- **24h review auto-approval** — Sweeps every 30 min to auto-approve reviews left un-actioned for 24h
+- **24h review auto-approval** — Sweeps every 30 min to auto-approve reviews left un-actioned for 24h. The clock is measured per draft and only a message someone typed pauses it
+- **One chat space per campaign** — A creator's chat opens on their first submission and is reused for every draft on that campaign, so earlier feedback stays on screen. Approving a draft posts a notice in the chat instead of closing it; the space is archived when the campaign ends
+- **Draft cards in the chat** — Each new video submitted for review lands in the chat as a card (draft number, source, tap to watch) on the creator's side of the conversation

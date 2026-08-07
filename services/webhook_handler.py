@@ -73,18 +73,20 @@ class WebhookHandler:
             )
             return False, None, None
 
-    def _build_brand_chat_url(self, review_id: int) -> tuple[str | None, int | None]:
+    def _open_chat_for_review(self, review_id: int) -> tuple[str | None, int | None]:
         """
-        Pre-create (or reuse) the chat space for this review. Returns
-        `(brand_magic_link, chat_space_id)`. The URL is `None` — and the
-        caller renders the Request Changes button without a `url` field —
-        if PUBLIC_BASE_URL isn't configured or chat creation fails. The
-        button still works as a plain action button in that case. The
-        chat_space_id is returned alongside so the caller can persist the
+        Resolve the campaign chat space for this review — creating it on the
+        creator's first submission, reusing it on every later one — and post
+        the "new draft submitted" card into it so both sides see the draft
+        land in the conversation they were already having.
+
+        Returns `(brand_magic_link, chat_space_id)`. The URL is `None` — and
+        the caller renders the Request Changes button without a `url` field —
+        if PUBLIC_BASE_URL isn't configured. The button still works as a plain
+        action button in that case, and the chat space is opened either way.
+        The chat_space_id is returned alongside so the caller can persist the
         brand-workspace message ts for chat-reply threading.
         """
-        if not Config.PUBLIC_BASE_URL:
-            return None, None
         try:
             from services import chat_service
             from utils.chat_tokens import make_invite_token
@@ -92,11 +94,22 @@ class WebhookHandler:
             space = chat_service.get_or_create_for_review(review_id)
             if space is None:
                 return None, None
+            try:
+                chat_service.post_review_submission_event(
+                    review_id, chat_space_id=space.id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not post review-submission card for review %s: %s",
+                    review_id, exc,
+                )
+            if not Config.PUBLIC_BASE_URL:
+                return None, space.id
             token = make_invite_token(chat_space_id=space.id, party="brand")
             url = f"{Config.PUBLIC_BASE_URL.rstrip('/')}/chat/invite/{token}"
             return url, space.id
         except Exception as exc:
-            logger.warning("Could not pre-build brand chat URL: %s", exc)
+            logger.warning("Could not open chat space for review: %s", exc)
             return None, None
 
     @staticmethod
@@ -228,12 +241,13 @@ class WebhookHandler:
             finally:
                 db.close()
 
-            # Pre-create (or reuse) the chat space NOW so the brand's magic
-            # link can be baked into the Request Changes button. The button
-            # uses both `url` and `action_id`: clicking it opens the chat in
-            # the brand's browser AND fires our backend handler, which
+            # Open (or reuse) the campaign chat space NOW so the brand's magic
+            # link can be baked into the Request Changes button, and so the
+            # submission card lands in the chat as the draft arrives. The
+            # button uses both `url` and `action_id`: clicking it opens the
+            # chat in the brand's browser AND fires our backend handler, which
             # records the decision + emails the creator.
-            brand_chat_url, chat_space_id = self._build_brand_chat_url(review_id)
+            brand_chat_url, chat_space_id = self._open_chat_for_review(review_id)
 
             # The admin (#content-reviews) copy gets an "Open as Admin" button
             # into the admin side of the same chat space instead of a Request

@@ -220,17 +220,18 @@ def chat_invite(token: str):
     if not space:
         return _error_response("Chat not found", "This chat space no longer exists.", status=404)
 
-    # Once a review has been approved (or its campaign archived), the
-    # creator/brand chat is closed. Old magic links — including the URL
-    # baked into the original "Request Changes" Slack button — should
-    # bounce instead of resurrecting a stale session.
+    # A chat space now runs for the whole campaign, so approvals leave it
+    # open. It's only unreachable once the campaign is archived, or if it
+    # was closed by the old per-review approval flow — in which case the
+    # creator's next submission reopens it. Either way, a link into a
+    # closed space should bounce rather than resurrect a stale session.
     if space.status != "active" and party in ("creator", "brand"):
         if space.status == "approved":
             heading = "Review approved"
             message = (
                 "This review has been approved by the brand and the chat for "
-                "it is closed. Any further conversation happens in the chat "
-                "space opened for the next review submission."
+                "it is closed. It reopens here, with the full history, as "
+                "soon as the next draft is submitted for review."
             )
         else:
             heading = "Chat closed"
