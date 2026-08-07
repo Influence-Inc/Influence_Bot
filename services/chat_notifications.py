@@ -269,11 +269,17 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
                 chat_url=brand_url,
             )
             try:
+                # This path only fires for creator/admin messages — both
+                # inbound to the brand — and threads under the brand's review
+                # post. Slack won't notify the brand of a thread reply they
+                # aren't following, so broadcast it to the channel too: the
+                # reply stays in the thread but also surfaces in the timeline.
                 WebClient(token=install.bot_token).chat_postMessage(
                     channel=target_channel,
                     text=f"New chat message from @{space.creator_username}",
                     blocks=blocks,
                     thread_ts=space.brand_slack_ts or None,
+                    reply_broadcast=True,
                 )
             except SlackApiError as exc:
                 err = exc.response.get("error") if exc.response else str(exc)
