@@ -916,6 +916,34 @@ def find_attachment(attachment_id: int) -> Optional[ChatAttachment]:
         db.close()
 
 
+def draft_link_for_message(*, chat_space_id: int, message_id: int) -> Optional[str]:
+    """The video link carried by a draft card, or None.
+
+    Scoped to the space on purpose: the link-preview route resolves the URL
+    from here rather than trusting one supplied by the caller, so the server
+    only ever fetches links a creator actually submitted to a chat the
+    requester can already read.
+    """
+    db = SessionLocal()
+    try:
+        msg = (
+            db.query(ChatMessage)
+            .filter(
+                ChatMessage.id == message_id,
+                ChatMessage.chat_space_id == chat_space_id,
+                ChatMessage.kind == KIND_REVIEW_SUBMISSION,
+            )
+            .first()
+        )
+        if msg is None:
+            return None
+        event = _decode_event(msg.event_json) or {}
+    finally:
+        db.close()
+    link = (event.get("video_link") or "").strip()
+    return link or None
+
+
 # ---------------------------------------------------------------------------
 # Reactions
 # ---------------------------------------------------------------------------

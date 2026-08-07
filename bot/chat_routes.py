@@ -10,6 +10,7 @@ Routes:
   POST /chat/<space_id>/messages      — submit message (+ optional attachment)
   POST /chat/<space_id>/messages/<id>/react — toggle a reaction
   POST /chat/<space_id>/read          — mark messages read up to id
+  GET  /chat/<space_id>/link-preview/<msg_id> — thumbnail for a draft link
   GET  /chat/attachment/<id>          — serve a stored attachment
 
   GET  /admin/chats                   — admin list (token-gated)
@@ -41,7 +42,7 @@ from flask import (
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from config import Config
-from services import chat_service
+from services import chat_service, link_preview
 from services.chat_pubsub import maybe_publish_typing, subscribe as pubsub_subscribe
 from services.chat_service import (
     archive_for_campaign,
@@ -543,6 +544,45 @@ def chat_messages_read(slug: str):
             up_to_message_id=up_to,
         )
     return jsonify({"ok": True})
+
+
+@bp.route("/chat/<slug>/link-preview/<int:message_id>", methods=["GET"])
+def chat_link_preview(slug: str, message_id: int):
+    """Thumbnail for a draft card's video link, proxied from our own origin.
+
+    The URL isn't a parameter — it's read from the stored `review_submission`
+    event for this message in this space, so the endpoint can't be pointed at
+    an arbitrary target. A link with no usable preview 404s and the card keeps
+    its placeholder artwork.
+    """
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
+    if err is not None:
+        return err
+
+    link = chat_service.draft_link_for_message(
+        chat_space_id=space.id, message_id=message_id
+    )
+    if not link:
+        return jsonify({"error": "no_link"}), 404
+
+    result = link_preview.fetch_thumbnail(link)
+    if result is None:
+        return jsonify({"error": "no_preview"}), 404
+
+    data, content_type = result
+    return Response(
+        data,
+        mimetype=content_type,
+        headers={
+            # Immutable in practice: a draft's link never changes once posted.
+            "Cache-Control": "private, max-age=86400",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
