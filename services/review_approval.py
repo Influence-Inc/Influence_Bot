@@ -22,7 +22,6 @@ from slack_sdk.errors import SlackApiError
 from config import Config
 from models.models import (
     ChatMessage,
-    ChatSpace,
     ReviewSubmission,
     SessionLocal,
 )
@@ -89,7 +88,7 @@ def approve_review_core(
     Mark a review approved + run all approval side effects:
       - flip decision/decided_at/decided_by on the ReviewSubmission row
       - email the creator the video_approved template
-      - close the per-review chat space (revoke brand+creator sessions)
+      - post an approval notice into the campaign chat space
       - post a fresh approval notification to admin #content-reviews
 
     Returns True if this call was the one that approved the review;
@@ -147,13 +146,18 @@ def approve_review_core(
         except Exception as exc:
             logger.warning("approval email send failed: %s", exc)
 
+    # The chat space runs for the whole campaign, so an approval doesn't
+    # close it — it posts a notice into the conversation. The creator's next
+    # draft lands in the same thread, under the notes that produced it.
     try:
-        space = chat_service.find_by_review_id(review_id)
-        if space is not None and space.status == "active":
-            chat_service.close_for_approval(space.id)
+        chat_service.post_review_decision_event(
+            review_id=review_id,
+            decision="approved",
+            actor_name=actor_name,
+        )
     except Exception as exc:
         logger.warning(
-            "Could not close chat space for review %s on approval: %s",
+            "Could not post approval notice into chat for review %s: %s",
             review_id, exc,
         )
 
@@ -220,21 +224,70 @@ def _post_admin_approval_notification(
 # Auto-approval sweep
 # ---------------------------------------------------------------------------
 
+def _as_naive_utc(value: datetime | None) -> datetime | None:
+    """Drop the tzinfo from an aware datetime so it compares against the
+    naive UTC values SQLAlchemy reads back out of the DateTime columns."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _last_conversation_at(db, chat_space_id: int) -> datetime | None:
+    """
+    When someone last *said* something in a chat space.
+
+    Only counts messages a person typed. The submission card and decision
+    notices are event rows the bot writes itself — counting those would
+    stop the silence clock the moment a draft arrives and nothing would
+    ever auto-approve again.
+    """
+    row = (
+        db.query(ChatMessage.created_at)
+        .filter(
+            ChatMessage.chat_space_id == chat_space_id,
+            ChatMessage.kind == chat_service.KIND_TEXT,
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _is_silent_since(db, chat_space_id: int | None, since: datetime | None) -> bool:
+    """True when nobody has spoken in the space since `since`."""
+    if chat_space_id is None:
+        return True
+    last = _as_naive_utc(_last_conversation_at(db, chat_space_id))
+    if last is None:
+        return True
+    since = _as_naive_utc(since)
+    if since is None:
+        return False
+    return last < since
+
+
 def run_auto_approval_sweep() -> int:
     """
     Auto-approve reviews where the brand has gone silent for 24h.
 
     Two cases:
     1. No decision at all 24h after the review was submitted (brand
-       ignored the Slack message entirely) AND the review's chat space
-       has no messages. The chat space is pre-created at review-post
-       time, so anyone (creator/brand/admin) can post in it before the
-       brand clicks a button; any such activity means the review is
-       being worked, so it shouldn't be auto-approved on the silence
-       clock.
+       ignored the Slack message entirely) AND nobody has spoken in the
+       chat since that draft was submitted. The chat space is opened at
+       review-post time, so anyone (creator/brand/admin) can post in it
+       before the brand clicks a button; any such activity means the
+       review is being worked, so it shouldn't be auto-approved on the
+       silence clock.
     2. Decision is `changes_requested` and 24h have passed since that
-       click, but the chat space still has zero messages (brand opened
-       the chat and then went silent).
+       click, but nobody has spoken since (brand opened the chat and then
+       went silent).
+
+    Both windows are measured from *this* review's own timestamp, not
+    from the start of the chat space: the space now spans the whole
+    campaign, so conversation about an earlier draft must not keep a
+    later one alive forever.
 
     Returns the number of reviews auto-approved on this sweep.
     """
@@ -243,51 +296,54 @@ def run_auto_approval_sweep() -> int:
 
     db = SessionLocal()
     try:
-        # Any message in the review's chat space (matched via
-        # ChatSpace.latest_review_id, the per-review mapping) counts as
-        # activity and pauses the no-action clock — regardless of who
-        # sent it or the space's status.
-        chat_activity_exists = (
-            db.query(ChatMessage.id)
-            .join(ChatSpace, ChatSpace.id == ChatMessage.chat_space_id)
-            .filter(ChatSpace.latest_review_id == ReviewSubmission.id)
-            .exists()
-        )
         no_action_rows = (
-            db.query(ReviewSubmission.id)
+            db.query(ReviewSubmission.id, ReviewSubmission.submitted_at)
             .filter(
                 ReviewSubmission.decision.is_(None),
                 ReviewSubmission.submitted_at.isnot(None),
                 ReviewSubmission.submitted_at <= cutoff,
-                ~chat_activity_exists,
             )
             .all()
         )
-        for (rid,) in no_action_rows:
-            stale_ids.append((rid, AUTO_APPROVE_ACTOR_NO_ACTION))
-
-        # Changes-requested + no chat activity 24h after the click. Join
-        # via ChatSpace.latest_review_id (per-review chat space mapping).
-        no_chat_rows = (
-            db.query(ReviewSubmission.id, ChatSpace.id)
-            .join(ChatSpace, ChatSpace.latest_review_id == ReviewSubmission.id)
+        changes_rows = (
+            db.query(ReviewSubmission.id, ReviewSubmission.decided_at)
             .filter(
                 ReviewSubmission.decision == "changes_requested",
                 ReviewSubmission.decided_at.isnot(None),
                 ReviewSubmission.decided_at <= cutoff,
-                ChatSpace.status == "active",
             )
             .all()
         )
-        for review_id, chat_space_id in no_chat_rows:
-            has_messages = (
-                db.query(ChatMessage.id)
-                .filter(ChatMessage.chat_space_id == chat_space_id)
-                .first()
-                is not None
-            )
-            if not has_messages:
-                stale_ids.append((review_id, AUTO_APPROVE_ACTOR_NO_CHAT))
+    finally:
+        db.close()
+
+    candidates = [
+        (rid, since, AUTO_APPROVE_ACTOR_NO_ACTION) for rid, since in no_action_rows
+    ] + [
+        (rid, since, AUTO_APPROVE_ACTOR_NO_CHAT) for rid, since in changes_rows
+    ]
+    if not candidates:
+        return 0
+
+    # Resolve each candidate's chat space first (each lookup opens its own
+    # session), then run the silence checks together on one session.
+    resolved: list[tuple[int, datetime | None, str, int | None]] = []
+    for review_id, since, actor_name in candidates:
+        space = chat_service.find_space_for_review(review_id)
+        # A changes-requested review with no reachable chat space has
+        # nowhere for the brand to have replied; leave it alone rather
+        # than approving on the strength of a missing record.
+        if space is None and actor_name == AUTO_APPROVE_ACTOR_NO_CHAT:
+            continue
+        if space is not None and space.status == "archived":
+            continue
+        resolved.append((review_id, since, actor_name, space.id if space else None))
+
+    db = SessionLocal()
+    try:
+        for review_id, since, actor_name, space_id in resolved:
+            if _is_silent_since(db, space_id, since):
+                stale_ids.append((review_id, actor_name))
     finally:
         db.close()
 

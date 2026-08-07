@@ -45,6 +45,31 @@ def init_db():
     _migrate_chat_spaces_creator_invited_at()
     _migrate_chat_spaces_admin_slack_ts()
     _migrate_review_submissions_submit_posts_url()
+    _migrate_chat_messages_events()
+
+
+def _migrate_chat_messages_events():
+    """
+    Add the event columns (`kind`, `event_json`, `review_id`) to
+    `chat_messages` on pre-column deploys, and backfill existing rows as
+    ordinary text messages. Idempotent.
+    """
+    inspector = inspect(engine)
+    if "chat_messages" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("chat_messages")}
+    with engine.begin() as conn:
+        if "kind" not in cols:
+            conn.execute(text(
+                "ALTER TABLE chat_messages ADD COLUMN kind VARCHAR(32) DEFAULT 'text'"
+            ))
+            conn.execute(text(
+                "UPDATE chat_messages SET kind = 'text' WHERE kind IS NULL"
+            ))
+        if "event_json" not in cols:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN event_json TEXT"))
+        if "review_id" not in cols:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN review_id INTEGER"))
 
 
 def _migrate_review_submissions_submit_posts_url():
@@ -428,9 +453,10 @@ class PaymentRecord(Base):
 # ---------------------------------------------------------------------------
 # Creator <-> Brand chat spaces
 #
-# Triggered when a brand clicks "Request Changes" on a review notification.
-# One chat space per (creator, campaign, brand) — reused across review
-# resubmissions and archived when the campaign ends.
+# Opened when the creator's first video for a campaign is submitted for
+# review. One chat space per (creator, campaign, brand) — it stays the same
+# space for the whole campaign (every resubmission, every approval) so the
+# conversation history is never split, and is archived when the campaign ends.
 # ---------------------------------------------------------------------------
 
 
@@ -462,7 +488,7 @@ class ChatSpace(Base):
     # Latest associated review (updated each time the creator resubmits).
     latest_review_id = Column(Integer, ForeignKey("review_submissions.id"), nullable=True)
 
-    # active | archived
+    # active | approved (legacy, pre-campaign-long spaces) | archived
     status = Column(String(20), nullable=False, default="active")
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -530,6 +556,23 @@ class ChatMessage(Base):
     sender_display_name = Column(String(255), nullable=True)
     body = Column(Text, nullable=False, default="")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # What this row *is*, so the chat UI can render it as something richer
+    # than a text bubble:
+    #   "text"              — an ordinary message someone typed
+    #   "review_submission" — a draft submitted for review (rich card widget)
+    #   "review_decision"   — approved / changes-requested system notice
+    # See services.chat_service.KIND_* for the canonical values.
+    kind = Column(String(32), nullable=False, default="text", server_default="text")
+    # JSON payload the widget renders (video link, draft number, …). NULL for
+    # plain text messages.
+    event_json = Column(Text, nullable=True)
+    # The review an event row belongs to. Lets us keep events idempotent per
+    # review and scope "has anything happened since review N" queries — the
+    # chat space itself now spans the whole campaign, not one review.
+    review_id = Column(
+        Integer, ForeignKey("review_submissions.id"), nullable=True, index=True
+    )
 
     space = relationship("ChatSpace", back_populates="messages")
     attachments = relationship("ChatAttachment", back_populates="message", cascade="all, delete-orphan")

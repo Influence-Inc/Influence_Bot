@@ -42,6 +42,9 @@ def _mark_brand_review_approved(review_id: int) -> None:
     "Approved by the INFLUENCE team" footer — deliberately without naming the
     approver. Best-effort; never raises.
     """
+    # `brand_slack_ts` tracks the newest review's brand-workspace post, so
+    # only mirror when the approved review *is* that newest one — otherwise
+    # we'd rewrite a later draft's message with an older draft's outcome.
     space = chat_service.find_by_review_id(review_id)
     if space is None or not space.brand_slack_ts or not space.brand_slack_channel:
         return
@@ -380,17 +383,26 @@ def register_actions(app):
         finally:
             db.close()
 
-        # Ensure a chat space exists (idempotent — pre-created at review
-        # post time, but this is the safety net if PUBLIC_BASE_URL was
-        # missing then). Opening the chat space deliberately sends the
-        # creator no notification: they're only emailed once the brand
-        # actually posts a message in the chat (see
+        # Ensure the campaign chat space exists (idempotent — opened at
+        # review post time, but this is the safety net if that failed) and
+        # mark the draft as needing changes in the conversation, so the
+        # brand's notes land under a clear "changes requested" notice.
+        # Opening the chat space deliberately sends the creator no
+        # notification: they're only emailed once the brand actually posts
+        # a message in the chat (see
         # services.chat_notifications.notify_new_message).
         try:
             team = body.get("team") or {}
-            chat_service.get_or_create_for_review(
+            space = chat_service.get_or_create_for_review(
                 review_id, workspace_team_id=team.get("id"),
             )
+            if space is not None:
+                chat_service.post_review_decision_event(
+                    review_id=review_id,
+                    decision="changes_requested",
+                    actor_name=actor_name,
+                    chat_space_id=space.id,
+                )
         except Exception as exc:
             logger.exception(
                 "Failed to ensure chat space for review %s: %s", review_id, exc
