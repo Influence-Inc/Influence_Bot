@@ -224,34 +224,50 @@ def _post_admin_approval_notification(
 # Auto-approval sweep
 # ---------------------------------------------------------------------------
 
-def _anyone_but_the_creator_has_spoken(db, chat_space_id: int | None) -> bool:
+def _as_naive_utc(value: datetime | None) -> datetime | None:
+    """Drop the tzinfo from an aware datetime so it compares against the
+    naive UTC values SQLAlchemy reads back out of the DateTime columns."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _anyone_but_the_creator_has_spoken_since(
+    db, chat_space_id: int | None, since: datetime | None
+) -> bool:
     """
-    Whether anyone other than the creator has said something in the space.
+    Whether anyone other than the creator has posted in the space since
+    `since` — the moment this particular draft started its own clock.
 
     This is what "the review is being worked on" means: a message from the
     brand or the INFLUENCE team is a person engaging with the draft, and
-    the silence clock stops for good. The creator's own messages don't
-    count — a creator chasing their own submission shouldn't be able to
-    hold it out of auto-approval.
+    it stops the silence clock. Two exclusions:
 
-    Bot-written event rows (the draft card, the approve / changes-requested
-    notices) are not messages anyone sent, so they never count. The
-    changes-requested notice in particular is posted the instant the brand
-    clicks the button, and would otherwise stop every case-2 sweep before
-    it could start.
+    * The creator's own messages. A creator chasing their own submission
+      shouldn't be able to hold it out of auto-approval.
+    * Bot-written event rows (the draft card, the approve /
+      changes-requested notices) — not messages anyone sent. The
+      changes-requested notice in particular is posted the instant the
+      brand clicks the button, and would otherwise stop every case-2 sweep
+      before it could start.
+
+    The `since` bound is what makes the clock per draft. The chat space
+    spans the whole campaign, so without it a single reply about draft 1
+    would keep every later draft from that creator alive forever.
     """
     if chat_space_id is None:
         return False
-    return (
-        db.query(ChatMessage.id)
-        .filter(
-            ChatMessage.chat_space_id == chat_space_id,
-            ChatMessage.kind == chat_service.KIND_TEXT,
-            ChatMessage.sender_party != "creator",
-        )
-        .first()
-        is not None
+    q = db.query(ChatMessage.id).filter(
+        ChatMessage.chat_space_id == chat_space_id,
+        ChatMessage.kind == chat_service.KIND_TEXT,
+        ChatMessage.sender_party != "creator",
     )
+    since = _as_naive_utc(since)
+    if since is not None:
+        q = q.filter(ChatMessage.created_at >= since)
+    return q.first() is not None
 
 
 def run_auto_approval_sweep() -> int:
@@ -261,20 +277,19 @@ def run_auto_approval_sweep() -> int:
     Two cases:
     1. No decision at all 24h after the review was submitted (brand
        ignored the Slack message entirely) AND nobody but the creator has
-       posted in the chat. The chat space is opened at review-post time,
-       so anyone can post in it before the brand clicks a button; a
-       message from the brand or the INFLUENCE team means the review is
-       being worked, so it shouldn't be auto-approved on the silence
-       clock.
+       posted in the chat since that draft arrived. The chat space is
+       opened at review-post time, so anyone can post in it before the
+       brand clicks a button; a message from the brand or the INFLUENCE
+       team means the review is being worked, so it shouldn't be
+       auto-approved on the silence clock.
     2. Decision is `changes_requested` and 24h have passed since that
-       click, but still nobody except the creator has posted (brand opened
-       the chat and then went silent).
+       click, but still nobody except the creator has posted since (brand
+       opened the chat and then went silent).
 
-    Activity counts campaign-wide, not per draft: the chat space spans the
-    whole campaign, so once the brand has spoken in it at all, no further
-    draft from that creator auto-approves. That is deliberate — an engaged
-    brand is reviewing on its own schedule, and the 24h clock exists for
-    the ones who never respond.
+    Each draft gets its own clock, running from its submission (case 1) or
+    from the changes-requested click (case 2). The chat space spans the
+    whole campaign, so without that bound one reply about draft 1 would
+    keep every later draft from that creator alive forever.
 
     Returns the number of reviews auto-approved on this sweep.
     """
@@ -283,8 +298,10 @@ def run_auto_approval_sweep() -> int:
 
     db = SessionLocal()
     try:
+        # Each row carries the moment its clock starts, so the activity
+        # check below only looks at what happened after it.
         no_action_rows = (
-            db.query(ReviewSubmission.id)
+            db.query(ReviewSubmission.id, ReviewSubmission.submitted_at)
             .filter(
                 ReviewSubmission.decision.is_(None),
                 ReviewSubmission.submitted_at.isnot(None),
@@ -293,7 +310,7 @@ def run_auto_approval_sweep() -> int:
             .all()
         )
         changes_rows = (
-            db.query(ReviewSubmission.id)
+            db.query(ReviewSubmission.id, ReviewSubmission.decided_at)
             .filter(
                 ReviewSubmission.decision == "changes_requested",
                 ReviewSubmission.decided_at.isnot(None),
@@ -305,17 +322,17 @@ def run_auto_approval_sweep() -> int:
         db.close()
 
     candidates = [
-        (rid, AUTO_APPROVE_ACTOR_NO_ACTION) for (rid,) in no_action_rows
+        (rid, since, AUTO_APPROVE_ACTOR_NO_ACTION) for rid, since in no_action_rows
     ] + [
-        (rid, AUTO_APPROVE_ACTOR_NO_CHAT) for (rid,) in changes_rows
+        (rid, since, AUTO_APPROVE_ACTOR_NO_CHAT) for rid, since in changes_rows
     ]
     if not candidates:
         return 0
 
     # Resolve each candidate's chat space first (each lookup opens its own
     # session), then run the activity checks together on one session.
-    resolved: list[tuple[int, str, int | None]] = []
-    for review_id, actor_name in candidates:
+    resolved: list[tuple[int, datetime | None, str, int | None]] = []
+    for review_id, since, actor_name in candidates:
         space = chat_service.find_space_for_review(review_id)
         # A changes-requested review with no reachable chat space has
         # nowhere for the brand to have replied; leave it alone rather
@@ -324,12 +341,12 @@ def run_auto_approval_sweep() -> int:
             continue
         if space is not None and space.status == "archived":
             continue
-        resolved.append((review_id, actor_name, space.id if space else None))
+        resolved.append((review_id, since, actor_name, space.id if space else None))
 
     db = SessionLocal()
     try:
-        for review_id, actor_name, space_id in resolved:
-            if not _anyone_but_the_creator_has_spoken(db, space_id):
+        for review_id, since, actor_name, space_id in resolved:
+            if not _anyone_but_the_creator_has_spoken_since(db, space_id, since):
                 stale_ids.append((review_id, actor_name))
     finally:
         db.close()

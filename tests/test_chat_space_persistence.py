@@ -369,11 +369,10 @@ def test_the_creators_own_messages_never_pause_the_clock():
     assert _sweep_collecting_approvals() == [review_id]
 
 
-def test_an_engaged_brand_keeps_every_later_draft_out_of_auto_approval():
-    # Activity counts campaign-wide, not per draft. The brand replied about
-    # draft 1 two days ago; draft 2 has sat in silence for 25h and still
-    # does not auto-approve, because this brand demonstrably reviews its
-    # creators by hand.
+def test_the_clock_resets_per_draft():
+    # The brand replied about draft 1 two days ago and has said nothing
+    # since. Draft 2 has sat untouched for 25h, so it auto-approves —
+    # feedback on an earlier draft doesn't keep a later one alive.
     _reset()
     now = datetime.now(timezone.utc)
     r1 = _submit_review(
@@ -388,6 +387,27 @@ def test_an_engaged_brand_keeps_every_later_draft_out_of_auto_approval():
     chat_service.get_or_create_for_review(r2)
     chat_service.post_review_submission_event(r2, chat_space_id=space.id)
 
+    # r1 saw a brand reply after its changes-requested click, so it is not
+    # swept; r2 has heard nothing since it was submitted.
+    assert _sweep_collecting_approvals() == [r2]
+
+
+def test_a_brand_reply_to_the_previous_draft_does_not_count():
+    # Same shape, but the brand's reply lands *before* draft 2 exists — the
+    # bound is what keeps it out of draft 2's window.
+    _reset()
+    now = datetime.now(timezone.utc)
+    r1 = _submit_review(submitted_at=now - timedelta(hours=50))
+    space = chat_service.get_or_create_for_review(r1)
+    _post_text(space.id, party="brand", created_at=now - timedelta(hours=49))
+
+    r2 = _submit_review(submitted_at=now - timedelta(hours=25))
+    chat_service.get_or_create_for_review(r2)
+
+    assert _sweep_collecting_approvals() == [r2]
+
+    # …and a reply after draft 2 arrives does stop its clock.
+    _post_text(space.id, party="brand", created_at=now - timedelta(hours=2))
     assert _sweep_collecting_approvals() == []
 
 
