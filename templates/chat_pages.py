@@ -735,10 +735,56 @@ CHAT_PAGE = """\
     updateReceipts();
   }
 
-  function nearBottom(){
-    return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 160);
+  function pageHeight(){
+    return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
   }
-  function scrollToBottom(){ window.scrollTo(0, document.body.scrollHeight); }
+  function nearBottom(){
+    return (window.innerHeight + window.scrollY) >= (pageHeight() - 160);
+  }
+  function scrollToBottom(){ window.scrollTo(0, pageHeight()); }
+
+  // ── Landing on the newest message ─────────────────────────────────────
+  // Scrolling once when the messages arrive isn't enough. An attachment has
+  // no height until it decodes, so the feed keeps growing *after* that
+  // scroll and leaves the reader parked above the latest message — on a
+  // conversation with a couple of photos in it, a whole screen above.
+  //
+  // So hold the view at the bottom while the page settles, re-pinning on
+  // every layout change, and let go the moment the reader scrolls for
+  // themselves. After that the usual nearBottom() stickiness takes over.
+  var bottomPin = null;
+  var PIN_SETTLE_MS = 4000;
+  // Scrolling programmatically fires `scroll` too, so watch for the input
+  // that means a *person* is scrolling rather than the event itself.
+  var PIN_RELEASE_EVENTS = ['wheel', 'touchstart', 'keydown', 'mousedown'];
+
+  function keepAtBottom(){ if(bottomPin) scrollToBottom(); }
+
+  function releaseBottomPin(){
+    if(!bottomPin) return;
+    if(bottomPin.observer) bottomPin.observer.disconnect();
+    clearTimeout(bottomPin.timer);
+    for(var i=0;i<PIN_RELEASE_EVENTS.length;i++){
+      window.removeEventListener(PIN_RELEASE_EVENTS[i], releaseBottomPin);
+    }
+    bottomPin = null;
+  }
+
+  function pinToBottom(){
+    releaseBottomPin();
+    bottomPin = {};
+    scrollToBottom();
+    if(typeof ResizeObserver !== 'undefined'){
+      // Fires as each image lands and the feed grows. Re-pinning doesn't
+      // change any element's size, so this can't feed itself.
+      bottomPin.observer = new ResizeObserver(keepAtBottom);
+      bottomPin.observer.observe(document.body);
+    }
+    for(var i=0;i<PIN_RELEASE_EVENTS.length;i++){
+      window.addEventListener(PIN_RELEASE_EVENTS[i], releaseBottomPin, {passive:true});
+    }
+    bottomPin.timer = setTimeout(releaseBottomPin, PIN_SETTLE_MS);
+  }
 
   function sendRead(){
     if(!lastId) return;
@@ -993,7 +1039,7 @@ CHAT_PAGE = """\
   backfill().then(function(){
     initialLoaded = true;
     if(!lastId) messagesEl.innerHTML = '<div class="empty">No messages yet — start the conversation 👋</div>';
-    scrollToBottom();
+    pinToBottom();
   });
 })();
 </script>
