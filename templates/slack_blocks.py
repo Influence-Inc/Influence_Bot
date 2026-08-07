@@ -521,10 +521,16 @@ def build_chat_influence_ping_blocks(
     sender_name: str,
     preview: str,
     admin_url: str = "",
+    mention: str = "",
 ) -> list[dict]:
     """
     New-chat-message ping into the INFLUENCE team channel (#content-reviews),
     so Jennifer's team stays in the loop on creator <-> brand chatter.
+
+    `mention`, when set (e.g. "<!subteam^S012ABC3>" or "<@U012ABC3>"), is
+    prepended so the team is notified even though the ping threads under the
+    review post. It must live inside the block text for Slack to parse it as
+    a real mention.
     """
     preview = (preview or "").replace("\n", " ").strip()
     if len(preview) > 200:
@@ -533,6 +539,8 @@ def build_chat_influence_ping_blocks(
         f":speech_balloon: *New chat message from {sender_name}*\n"
         f"*{brand_name}* × @{creator_username} · _{campaign_name}_"
     )
+    if mention:
+        header = f"{mention} {header}"
     if preview:
         header = f"{header}\n>{preview}"
     blocks: list[dict] = [

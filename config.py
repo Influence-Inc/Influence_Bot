@@ -61,6 +61,16 @@ class Config:
         os.environ.get("SLACK_CHANNEL_DEADLINES") or SLACK_CHANNEL_ID or "#creator-deadlines"
     )
 
+    # Optional Slack mention prepended to inbound creator/brand chat pings in
+    # SLACK_CHANNEL_REVIEWS. Chat pings thread under the original "content to be
+    # reviewed" post so the whole conversation stays grouped, but Slack doesn't
+    # notify channel members of thread replies unless they follow the thread.
+    # Those pings are therefore also broadcast to the channel; setting this adds
+    # a mention so the team gets a hard notification even if they've muted the
+    # channel. Accepts a user-group handle ("<!subteam^S012ABC3>"), a user
+    # ("<@U012ABC3>"), or "<!here>" / "<!channel>". Unset = broadcast only.
+    SLACK_REVIEWS_NOTIFY = os.environ.get("SLACK_REVIEWS_NOTIFY") or None
+
     # --- Email (Resend HTTP API) ---
     # Railway blocks outbound SMTP on most plans, so we send via Resend's HTTPS
     # API instead of Gmail SMTP. Domains useinfluence.xyz and influence.technology

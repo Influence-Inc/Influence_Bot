@@ -121,7 +121,9 @@ def _review_admin_anchor(space: ChatSpace) -> tuple[Optional[str], Optional[str]
         db.close()
 
 
-def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) -> None:
+def _notify_influence_team(
+    space: ChatSpace, *, sender_party: str, sender_name: str, preview: str
+) -> None:
     """
     Slack-ping the INFLUENCE team channel (#content-reviews) so Jennifer's
     team is kept in the loop on chat activity. This is what makes the
@@ -130,9 +132,21 @@ def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) 
     Pings thread under the original review-submitted "content to be
     reviewed" post when its Slack coordinates are known, so every chat
     message (creator, brand, or admin) lands as a reply inside that
-    thread instead of a fresh top-level notification. Falls back to the
-    legacy scheme (anchor on the first ping via admin_slack_ts) for chat
-    spaces whose review has no captured Slack post.
+    thread instead of a fresh top-level notification, keeping the whole
+    conversation grouped. Falls back to the legacy scheme (anchor on the
+    first ping via admin_slack_ts) for chat spaces whose review has no
+    captured Slack post.
+
+    Threading alone is invisible, though: Slack doesn't notify channel
+    members of a thread reply unless they're already following the thread,
+    and nobody on the team is. So when the message came from a creator or
+    brand — the people the team needs to hear from — the ping is *also*
+    broadcast to the channel (``reply_broadcast=True``), which surfaces it
+    in the main timeline and notifies the channel while still keeping the
+    reply inside the thread. If ``SLACK_REVIEWS_NOTIFY`` is set, a mention
+    is prepended so the team gets a hard ping even with the channel muted.
+    Messages the team typed themselves (sender_party="admin") stay as quiet
+    threaded replies — no need to broadcast their own words back at them.
 
     Best-effort; never raises.
     """
@@ -152,6 +166,19 @@ def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) 
         return
     thread_ts = review_ts or space.admin_slack_ts or None
 
+    # Inbound messages (creator/brand) are the ones the team must not miss:
+    # broadcast them to the channel and optionally tag a mention. The team's
+    # own admin-sent messages stay as silent threaded replies.
+    broadcast = sender_party in ("creator", "brand")
+    mention = Config.SLACK_REVIEWS_NOTIFY if broadcast else None
+
+    text = (
+        f"New chat message from {sender_name} — "
+        f"{space.brand_name or 'brand'} × @{space.creator_username}"
+    )
+    if mention:
+        text = f"{mention} {text}"
+
     try:
         blocks = build_chat_influence_ping_blocks(
             creator_username=space.creator_username,
@@ -160,15 +187,14 @@ def _notify_influence_team(space: ChatSpace, *, sender_name: str, preview: str) 
             sender_name=sender_name,
             preview=preview,
             admin_url=admin_url,
+            mention=mention or "",
         )
         response = WebClient(token=Config.SLACK_BOT_TOKEN).chat_postMessage(
             channel=channel,
-            text=(
-                f"New chat message from {sender_name} — "
-                f"{space.brand_name or 'brand'} × @{space.creator_username}"
-            ),
+            text=text,
             blocks=blocks,
             thread_ts=thread_ts,
+            reply_broadcast=broadcast,
         )
         # Only fall back to anchoring on the first ping when we couldn't
         # thread under the review-submitted message.
@@ -243,11 +269,17 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
                 chat_url=brand_url,
             )
             try:
+                # This path only fires for creator/admin messages — both
+                # inbound to the brand — and threads under the brand's review
+                # post. Slack won't notify the brand of a thread reply they
+                # aren't following, so broadcast it to the channel too: the
+                # reply stays in the thread but also surfaces in the timeline.
                 WebClient(token=install.bot_token).chat_postMessage(
                     channel=target_channel,
                     text=f"New chat message from @{space.creator_username}",
                     blocks=blocks,
                     thread_ts=space.brand_slack_ts or None,
+                    reply_broadcast=True,
                 )
             except SlackApiError as exc:
                 err = exc.response.get("error") if exc.response else str(exc)
@@ -260,5 +292,8 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
     # the chat also shows up (threaded) under the review-submitted post
     # in #content-reviews rather than only living inside the chat UI.
     _notify_influence_team(
-        space, sender_name=sender_name, preview=preview or "(image / attachment)"
+        space,
+        sender_party=sender_party,
+        sender_name=sender_name,
+        preview=preview or "(image / attachment)",
     )
