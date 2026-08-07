@@ -102,14 +102,32 @@ CHAT_PAGE = """\
       box-shadow:inset 0 0 0 .5px rgba(0,0,0,.10);
       transition:transform .14s cubic-bezier(.32,.72,0,1)}
     a.rcard:active{transform:scale(.98)}
-    .rcard-media{position:relative;height:134px;display:flex;align-items:center;justify-content:center;
+    .rcard-media{position:relative;height:134px;overflow:hidden;
+      display:flex;align-items:center;justify-content:center;
       background:radial-gradient(120% 130% at 26% 8%,#3A3A3C 0%,#1C1C1E 58%,#0B0B0C 100%)}
     .rcard-media:after{content:'';position:absolute;inset:0;
       background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(0,0,0,.18))}
+    /* Fetched preview. Drafts are usually vertical, so the thumbnail is
+       letterboxed over a blurred blow-up of itself rather than cropped to
+       a 2:1 sliver. Both sit under the :after scrim, badge and play button. */
+    .rcard-thumb,.rcard-thumb-bg{position:absolute;inset:0;width:100%;height:100%;
+      opacity:0;transition:opacity .3s ease;pointer-events:none}
+    .rcard-thumb{object-fit:contain}
+    .rcard-thumb-bg{object-fit:cover;transform:scale(1.4);
+      filter:blur(18px) saturate(1.1) brightness(.5)}
+    .rcard-media.has-thumb .rcard-thumb{opacity:1}
+    .rcard-media.has-thumb .rcard-thumb-bg{opacity:1}
+    /* Over a real image the badge and play glyph need a firmer scrim. */
+    .rcard-media.has-thumb:after{background:linear-gradient(180deg,rgba(0,0,0,.26),rgba(0,0,0,.40))}
     .rcard-play{position:relative;z-index:1;width:54px;height:54px;border-radius:99px;color:#fff;
       background:rgba(255,255,255,.18);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
       display:flex;align-items:center;justify-content:center;box-shadow:0 1px 14px rgba(0,0,0,.30)}
-    .rcard-play svg{margin-left:2px}
+    /* Light glass reads well on the dark placeholder but turns milky over a
+       photo — dark glass keeps the white glyph crisp whatever the frame is. */
+    .rcard-media.has-thumb .rcard-play{background:rgba(0,0,0,.34)}
+    /* No nudge here — PLAY is drawn with its centre of mass on the viewBox
+       centre, so flex centring already puts it optically dead centre. */
+    .rcard-play svg{display:block}
     .rcard-badge{position:absolute;z-index:1;top:10px;left:10px;font-size:10px;font-weight:600;
       letter-spacing:.04em;text-transform:uppercase;color:#fff;background:rgba(255,255,255,.20);
       -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
@@ -329,7 +347,12 @@ CHAT_PAGE = """\
   var prevAppend = null;
 
   var SMILEY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg>';
-  var PLAY = '<svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.79-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z"></path></svg>';
+  // Play triangle. The points are chosen so the triangle's centre of mass sits
+  // on the viewBox centre (12,12) — a bounding-box-centred triangle reads as
+  // left-heavy, which is why play glyphs are usually nudged right by hand. The
+  // rounded corners come from a stroked, round-joined outline, so the shape
+  // stays symmetric instead of drifting the way hand-placed arcs do.
+  var PLAY = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><path d="M9 6.6 L18.6 12 L9 17.4 Z"></path></svg>';
   var TICK = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   var PENCIL = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"></path></svg>';
 
@@ -450,6 +473,17 @@ CHAT_PAGE = """\
     var n = parseInt(ev.submission_number, 10);
     return (n > 0) ? n : 1;
   }
+  // The preview image is fetched from our own origin (the server resolves the
+  // link and proxies the thumbnail), so nothing here depends on the video host
+  // allowing hotlinks. `data-src` rather than `src` so hydrateThumbs can watch
+  // the load: only a thumbnail that actually arrives is revealed, and a link
+  // with no preview silently keeps the placeholder artwork.
+  function thumbHtml(m, link){
+    if(!link) return '';
+    var src = withAs('/chat/' + spaceSlug + '/link-preview/' + m.id);
+    return '<img class="rcard-thumb-bg" alt="" aria-hidden="true" decoding="async">' +
+           '<img class="rcard-thumb" alt="" data-src="' + escapeHtml(src) + '" decoding="async">';
+  }
   function reviewCardHtml(m){
     var ev = m.event || {};
     var n = draftNumber(ev);
@@ -458,6 +492,7 @@ CHAT_PAGE = """\
     var sub = link ? (sourceLabel(hostOf(link)) + ' · Tap to watch') : 'No link attached';
     var inner =
       '<div class="rcard-media">' +
+        thumbHtml(m, link) +
         '<span class="rcard-badge">Draft ' + n + '</span>' +
         '<span class="rcard-play">' + PLAY + '</span>' +
       '</div>' +
@@ -468,6 +503,32 @@ CHAT_PAGE = """\
     if(!link) return '<div class="rcard">' + inner + '</div>';
     return '<a class="rcard" href="' + escapeHtml(link) +
       '" target="_blank" rel="noopener noreferrer nofollow">' + inner + '</a>';
+  }
+
+  // Kick off the preview fetch for any draft card just added to the feed.
+  // The image is only faded in once it decodes; if the server has no preview
+  // for that link (404) the <img>s are dropped and the card keeps its
+  // placeholder, so a broken-image icon never appears in the conversation.
+  function hydrateThumbs(root){
+    var imgs = root.querySelectorAll('img.rcard-thumb[data-src]');
+    for(var i=0;i<imgs.length;i++){
+      (function(img){
+        var src = img.getAttribute('data-src');
+        img.removeAttribute('data-src');
+        var media = img.parentNode;
+        var bg = media ? media.querySelector('.rcard-thumb-bg') : null;
+        if(!src){ if(bg) bg.remove(); img.remove(); return; }
+        img.addEventListener('load', function(){
+          if(media) media.classList.add('has-thumb');
+        });
+        img.addEventListener('error', function(){
+          if(bg) bg.remove();
+          img.remove();
+        });
+        if(bg) bg.setAttribute('src', src);
+        img.setAttribute('src', src);
+      })(imgs[i]);
+    }
   }
 
   // `review_decision` — a centred system line, the way iMessage announces
@@ -668,6 +729,7 @@ CHAT_PAGE = """\
     }
 
     messagesEl.appendChild(row);
+    hydrateThumbs(row);
     prevAppend = {party:m.party, sender:(m.sender || ''), mine:mine, day:dk};
     if(m.id > lastId) lastId = m.id;
     updateReceipts();
