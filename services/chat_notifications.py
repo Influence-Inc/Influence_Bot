@@ -245,6 +245,7 @@ def notify_new_message(*, chat_space_id: int, sender_party: str, message_id: int
                     brand_name=space.brand_name or "the brand",
                     message=full_body or "(image / attachment)",
                     chat_url=creator_url,
+                    sender_party=sender_party,
                 )
                 _email_service.send_email(
                     space.creator_email,

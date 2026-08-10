@@ -110,6 +110,50 @@ def test_admin_message_email_also_full():
     assert "…" not in sent[0]["body"]
 
 
+def test_brand_message_email_is_attributed_to_the_brand():
+    space = _make_space()
+    msg = chat_service.post_message(
+        chat_space_id=space.id,
+        sender_party="brand",
+        sender_identifier="reve",
+        sender_display_name="Reve Team",
+        body="Loved it, one small tweak please.",
+    )
+    sent = _capture_emails(chat_notifications)
+    chat_notifications.notify_new_message(
+        chat_space_id=space.id, sender_party="brand", message_id=msg.id
+    )
+    assert sent[0]["subject"] == "Reve team messaged you — Content Review"
+    assert "Reve Team just sent you a message" in sent[0]["body"]
+
+
+def test_admin_message_email_is_not_attributed_to_the_brand():
+    """Messages from our own side must not read as if the brand sent them —
+    nor announce INFLUENCE as the sender. They're framed as feedback."""
+    space = _make_space()
+    msg = chat_service.post_message(
+        chat_space_id=space.id,
+        sender_party="admin",
+        sender_identifier="influence-admin",
+        sender_display_name="Influence",
+        body="Quick note on the edit before we send it to the brand.",
+    )
+    sent = _capture_emails(chat_notifications)
+    chat_notifications.notify_new_message(
+        chat_space_id=space.id, sender_party="admin", message_id=msg.id
+    )
+    subject = sent[0]["subject"]
+    body = sent[0]["body"]
+    assert subject == "You've received feedback on your Reve content"
+    assert "messaged you" not in subject
+    assert "messaged you" not in body
+    assert "Reve Team just sent you" not in body
+    assert "You've received feedback" in body
+    # The message itself and the reply link still come through.
+    assert "Quick note on the edit" in body
+    assert "https://i.influence.technology" in body
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
