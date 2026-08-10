@@ -187,7 +187,13 @@ CHAT_PAGE = """\
     @keyframes bob{0%,60%,100%{transform:translateY(0);opacity:.35}30%{transform:translateY(-3px);opacity:1}}
 
     /* ── COMPOSER ── */
-    .composer{position:sticky;bottom:0;background:rgba(255,255,255,.85);
+    /* z-index keeps the sticky bar above message decorations (draft badge,
+       play glyph, reaction pill) as they scroll past underneath it. Those are
+       positioned with a positive z-index and would otherwise paint on top of
+       the composer, which sits at the auto level — the header dodges the same
+       trap with its own z-index above. Stays below the emoji popover (50) and
+       lightbox (100), which are meant to cover the bar. */
+    .composer{position:sticky;bottom:0;z-index:20;background:rgba(255,255,255,.85);
       backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--line)}
     .composer-row{max-width:820px;margin:0 auto;padding:10px 16px 6px;display:flex;align-items:center;gap:10px}
     .attach-btn{width:38px;height:38px;border-radius:99px;background:var(--recv-bg);color:var(--sent-bg);
