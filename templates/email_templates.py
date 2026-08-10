@@ -128,17 +128,42 @@ INFLUENCE Team
 
 
 def chat_new_message(
-    creator_name: str, brand_name: str, message: str, chat_url: str
+    creator_name: str,
+    brand_name: str,
+    message: str,
+    chat_url: str,
+    sender_party: str = "brand",
 ) -> dict:
-    """Email to a creator when a brand posts a new message in the chat space.
+    """Email to a creator when a new message lands in the chat space.
 
     `message` is the full message body (newlines preserved) — the email quotes
     it in its entirety rather than a truncated preview.
+
+    `sender_party` decides the attribution: brand messages are announced as
+    coming from the brand team, while messages from our own (INFLUENCE) side
+    stay neutral — the creator just hears that feedback came in, not that
+    "the INFLUENCE team messaged you".
     """
-    subject = f"{brand_name} team messaged you — Content Review"
+    if sender_party == "brand":
+        subject = f"{brand_name} team messaged you — Content Review"
+        intro = (
+            f"{brand_name} Team just sent you a message about the content you "
+            "submitted for review:"
+        )
+    else:
+        # `brand_name` falls back to a generic placeholder upstream when the
+        # space has no brand on it — don't splice that into the subject.
+        brand_label = (brand_name or "").strip()
+        if brand_label.lower() in ("", "the brand"):
+            subject = "You've received feedback on your content — Content Review"
+        else:
+            subject = f"You've received feedback on your {brand_label} content"
+        intro = (
+            "You've received feedback on the content you submitted for review:"
+        )
     body = f"""Hi {creator_name},
 
-{brand_name} Team just sent you a message about the content you submitted for review:
+{intro}
 
 --
 {message}
