@@ -295,6 +295,7 @@ def build_review_submitted_blocks(
     show_meta: bool = False,
     chat_url: str | None = None,
     admin_chat_url: str | None = None,
+    include_ignore: bool = False,
 ) -> list[dict]:
     """
     Webhook event: creator submitted a video for review.
@@ -315,6 +316,10 @@ def build_review_submitted_blocks(
     the team enters the chat as admins rather than requesting changes as the
     brand. It's a plain link button (no action_id), so it only navigates —
     it doesn't record a decision or email the creator.
+
+    `include_ignore` adds the "Ignore" button. INFLUENCE-workspace only:
+    ignoring is our own call on submissions that were never meant to be
+    reviewed, and the brand shouldn't see (or make) it.
     """
     body_lines = [":video_camera: *Content to be reviewed*", ""]
     if show_meta:
@@ -362,25 +367,125 @@ def build_review_submitted_blocks(
             }
             if chat_url:
                 secondary_btn["url"] = chat_url
+        elements = [
+            {
+                "type": "button",
+                "action_id": "review_approve",
+                "style": "primary",
+                "text": {"type": "plain_text", "text": "Approve"},
+                "value": str(review_id),
+            },
+            secondary_btn,
+        ]
+        if include_ignore:
+            elements.append(build_review_ignore_button(review_id))
         blocks.append(
             {
                 "type": "actions",
                 "block_id": f"review_actions_{review_id}",
-                "elements": [
-                    {
-                        "type": "button",
-                        "action_id": "review_approve",
-                        "style": "primary",
-                        "text": {"type": "plain_text", "text": "Approve"},
-                        "value": str(review_id),
-                    },
-                    secondary_btn,
-                ],
+                "elements": elements,
             }
         )
 
     blocks.append({"type": "divider"})
     return blocks
+
+
+def build_review_ignore_button(review_id: int) -> dict:
+    """
+    The "Ignore" button element for a review's action row.
+
+    Confirmation-gated: ignoring silences the review for good (no
+    auto-approval, no coverage of the creator's deliverables), so a stray
+    click shouldn't be able to do it. "Undo ignore" is offered afterwards
+    either way — see `build_review_ignored_blocks`.
+    """
+    return {
+        "type": "button",
+        "action_id": "review_ignore",
+        "text": {"type": "plain_text", "text": "Ignore"},
+        "value": str(review_id),
+        "confirm": {
+            "title": {"type": "plain_text", "text": "Ignore this submission?"},
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "Use this when the link wasn't meant for review.\n\n"
+                    "• It won't be auto-approved after 24h\n"
+                    "• It stops counting as a video in review, so the creator "
+                    "keeps getting their deadline reminders\n\n"
+                    "You can undo this afterwards."
+                ),
+            },
+            "confirm": {"type": "plain_text", "text": "Ignore"},
+            "deny": {"type": "plain_text", "text": "Cancel"},
+        },
+    }
+
+
+def build_review_ignored_blocks(
+    review_id: int,
+    creator_username: str,
+    actor_label: str,
+    timestamp: str,
+) -> list[dict]:
+    """
+    Footer + "Undo ignore" row appended to a review message once it's been
+    ignored, replacing the Approve / Ignore action row.
+
+    `actor_label` is rendered as-is, so pass a Slack mention (``<@U123>``)
+    when the click's user id is known and a plain name otherwise.
+    """
+    return [
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": (
+                        f":no_bell: *Ignored* by {actor_label} — "
+                        f"@{creator_username} ({timestamp}). No auto-approval, "
+                        f"and it no longer counts as a video in review."
+                    ),
+                }
+            ],
+        },
+        {
+            "type": "actions",
+            "block_id": f"review_ignored_actions_{review_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "review_unignore",
+                    "text": {"type": "plain_text", "text": "Undo ignore"},
+                    "value": str(review_id),
+                }
+            ],
+        },
+    ]
+
+
+def build_review_closed_context_block(creator_username: str, timestamp: str) -> dict:
+    """
+    Brand-workspace footer for a review the INFLUENCE team ignored.
+
+    The brand's copy loses its buttons at the same time, so this explains
+    why — without exposing our internal "ignored" wording or naming who
+    clicked it.
+    """
+    return {
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": (
+                    f":no_entry_sign: *No review needed* — this submission was "
+                    f"closed by the INFLUENCE team. @{creator_username} "
+                    f"({timestamp})"
+                ),
+            }
+        ],
+    }
 
 
 def build_review_approved_blocks(
