@@ -25,7 +25,7 @@ INFLUENCE Bot
 ├── bot/
 │   ├── handlers.py                 # Slack event handlers (app_mention, message, team_join)
 │   ├── commands.py                 # Slash commands (/influence-status, /influence-check, …)
-│   ├── actions.py                  # Interactive actions (approve / request-changes / mark-as-paid)
+│   ├── actions.py                  # Interactive actions (approve / request-changes / ignore / mark-as-paid)
 │   └── chat_routes.py              # Creator <-> brand chat-space HTTP routes
 ├── services/
 │   ├── reelstats_api.py            # Polls GET /api/bot/campaigns on the consolidated container
@@ -33,6 +33,8 @@ INFLUENCE Bot
 │   ├── scheduler_service.py        # Poll loop + milestone/deliverable/deadline/upload checks
 │   ├── review_approval.py          # Shared approve / 24h auto-approval flow
 │   ├── review_coverage.py          # Do a creator's in-review videos cover what they still owe?
+│   ├── review_ignore.py            # "Ignore" — take a mistaken submission out of play
+│   ├── review_messages.py          # Rebuilds the admin/brand Slack messages a review lives in
 │   ├── email_service.py            # Resend HTTPS email sending (jennifer@useinfluence.xyz)
 │   ├── brand_routing.py            # Maps Slack workspaces <-> brands for per-brand notifications
 │   ├── slack_oauth.py              # Per-brand install links + OAuth callback
@@ -58,6 +60,7 @@ Creator submits video via Tally
         │    (with Approve / Request Changes buttons)
         │
         ├──► Notifies INFLUENCE team on Slack
+        │    (same card + an Ignore button, INFLUENCE workspace only)
         │
         └──► Emails Brand POC about the submission
                     │
@@ -285,9 +288,10 @@ Hitting that route 302s the brand to Slack's consent screen.
 - **Poll-loop checks** — Every `POLL_INTERVAL_SECONDS` (default 60s) the bot re-fetches `GET /api/bot/campaigns` and runs milestone, deliverables-complete, deadline, and upload-follow-up checks (idempotent via per-alert dedup tables)
 - **Daily summary at 9 AM** — Posts a payment-readiness overview to the payments channel
 - **Escalating deadline reminders** — 3 days before -> 1 day before -> overdue, via Slack + email
-- **Reminder emails skip creators waiting on review** — the nag email is held when the videos a creator has already shared for review cover the deliverables they still owe (counted, so 1 video shared against 2 still owed still emails; a draft sent back with "Request Changes" doesn't count, and an unmet view target needs at least one video still in the pipeline). The Slack alert still posts, annotated with why no email went out
+- **Reminder emails skip creators waiting on review** — the nag email is held when the videos a creator has already shared for review cover the deliverables they still owe (counted, so 1 video shared against 2 still owed still emails; a draft sent back with "Request Changes" or marked as ignored doesn't count, and an unmet view target needs at least one video still in the pipeline). The Slack alert still posts, annotated with why no email went out
 - **Real-time webhook alerts** — Review submissions, video-link submissions, approvals (poll is the safety-net fallback)
 - **24h review auto-approval** — Sweeps every 30 min to auto-approve reviews left un-actioned for 24h. A chat message from someone other than the creator (brand or INFLUENCE) means the review is being worked and stops the clock; the creator's own messages don't. Each draft gets its own clock, so feedback on an earlier draft doesn't keep a later one from auto-approving
+- **Ignore a submission that was never meant for review** — An **Ignore** button on the `#content-reviews` copy of every review (INFLUENCE workspace only — brands never see it) for creators who paste the wrong link, submit a duplicate, or test the form. An ignored submission is out of play: it's skipped by the 24h auto-approval sweep, so no approval email reaches the creator, and it stops counting as a video in review, so their deadline reminder emails keep going out. The brand's copy loses its Approve / Request Changes buttons at the same time, with a neutral "no review needed" note. **Undo ignore** puts it back, decision and all — the 24h clock is not restarted, since it measures how long the brand has been silent. Review messages posted before the button shipped pick it up automatically: a one-shot backfill re-renders every still-pending review message shortly after boot
 - **One chat space per campaign** — A creator's chat opens on their first submission and is reused for every draft on that campaign, so earlier feedback stays on screen. Approving a draft posts a notice in the chat instead of closing it; the space is archived when the campaign ends
 - **Draft cards in the chat** — Each new video submitted for review lands in the chat as a card (draft number, source, tap to watch) on the creator's side of the conversation
 - **Draft link previews** — The card shows a real thumbnail of the video. The server resolves the link (Google Drive, YouTube, Vimeo and Loom via their thumbnail endpoints; anything else via the page's `og:image`), fetches the image and serves it from our own origin, so the preview works regardless of hotlink rules and the creator's URL never leaves the server. Previews are cached for 6h; a link with no usable preview (an unshared Drive file, say) quietly keeps the placeholder artwork

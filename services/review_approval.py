@@ -105,6 +105,16 @@ def approve_review_core(
             return False
         if row.decision == "approved":
             return False
+        if row.ignored:
+            # The INFLUENCE team took this submission out of play (a link sent
+            # by mistake, a duplicate). The sweep already filters these out;
+            # this is the backstop that keeps a stale Slack button from
+            # emailing the creator an approval for something nobody reviewed.
+            logger.info(
+                "approve_review_core: review_id=%s is ignored, not approving",
+                review_id,
+            )
+            return False
         row.decision = "approved"
         row.decided_by_id = actor_id
         row.decided_by_name = actor_name
@@ -274,6 +284,10 @@ def run_auto_approval_sweep() -> int:
     """
     Auto-approve reviews where the brand has gone silent for 24h.
 
+    Reviews the INFLUENCE team has marked as ignored are skipped outright —
+    a link the creator sent by mistake shouldn't earn them an approval email
+    just because nobody clicked anything (see services/review_ignore.py).
+
     Two cases:
     1. No decision at all 24h after the review was submitted (brand
        ignored the Slack message entirely) AND nobody but the creator has
@@ -300,10 +314,14 @@ def run_auto_approval_sweep() -> int:
     try:
         # Each row carries the moment its clock starts, so the activity
         # check below only looks at what happened after it.
+        # `ignored.isnot(True)` rather than `== False`: rows written before
+        # the column existed were backfilled, but a NULL from any other path
+        # must still read as "not ignored".
         no_action_rows = (
             db.query(ReviewSubmission.id, ReviewSubmission.submitted_at)
             .filter(
                 ReviewSubmission.decision.is_(None),
+                ReviewSubmission.ignored.isnot(True),
                 ReviewSubmission.submitted_at.isnot(None),
                 ReviewSubmission.submitted_at <= cutoff,
             )
@@ -313,6 +331,7 @@ def run_auto_approval_sweep() -> int:
             db.query(ReviewSubmission.id, ReviewSubmission.decided_at)
             .filter(
                 ReviewSubmission.decision == "changes_requested",
+                ReviewSubmission.ignored.isnot(True),
                 ReviewSubmission.decided_at.isnot(None),
                 ReviewSubmission.decided_at <= cutoff,
             )

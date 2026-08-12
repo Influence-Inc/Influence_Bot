@@ -268,6 +268,8 @@ class WebhookHandler:
                 review_id=review_id,
                 show_meta=True,
                 admin_chat_url=admin_chat_url,
+                # INFLUENCE workspace only — see bot/actions.handle_review_ignore.
+                include_ignore=True,
             )
             text = f"New review submitted by @{username} for {campaign_name}"
 

@@ -24,8 +24,10 @@ Two cases make this more than a boolean:
    a second time against the videos that are still outstanding.
 
 A draft the brand sent back with "Request Changes" is *not* in play — the
-ball is back with the creator, so a reminder is legitimate. That decision
-state only exists in our own `review_submissions` table, while the
+ball is back with the creator, so a reminder is legitimate. Neither is one
+the INFLUENCE team marked as ignored: a link sent by mistake is not work the
+creator has handed over, so it must not buy them silence on the deadline.
+Both states only exist in our own `review_submissions` table, while the
 ReelStats `creator.reviews` array is the durable list of what was shared.
 Both sources are unioned by video link: the API list survives a DB wipe
 (SQLite on Railway is ephemeral), and the stored rows cover payloads that
@@ -45,6 +47,12 @@ from models.models import ReviewSubmission, SessionLocal
 logger = logging.getLogger(__name__)
 
 CHANGES_REQUESTED = "changes_requested"
+# Not a `decision` value — a synthetic state standing in for rows the
+# INFLUENCE team flagged as ignored (see services/review_ignore.py).
+IGNORED = "ignored"
+# States that take a shared video out of play, so it no longer covers
+# anything the creator still owes.
+NOT_IN_PLAY = frozenset({CHANGES_REQUESTED, IGNORED})
 
 
 @dataclass(frozen=True)
@@ -163,8 +171,8 @@ def _normalize_link(link) -> str:
 
 def _in_play_review_count(creator: dict) -> int:
     """
-    Distinct videos this creator has shared for review that the brand
-    hasn't sent back for changes.
+    Distinct videos this creator has shared for review that the brand hasn't
+    sent back for changes and the INFLUENCE team hasn't ignored.
 
     Keyed by video link so the same draft reported by both the ReelStats
     payload and our `review_submissions` table counts once. A submission
@@ -172,10 +180,11 @@ def _in_play_review_count(creator: dict) -> int:
     those are rare (the webhook logs a warning when `videoLink` is empty).
     """
     stored: dict[str, str | None] = {}
-    for key, decision in _stored_reviews(creator):
+    for key, state in _stored_reviews(creator):
         # Later rows win: a resubmission of the same link supersedes the
-        # decision recorded on the earlier one.
-        stored[key] = decision
+        # state recorded on the earlier one — so re-sending a link that was
+        # ignored once puts it back in play.
+        stored[key] = state
 
     reviews: dict[str, str | None] = {}
     for index, review in enumerate(creator.get("reviews") or []):
@@ -185,14 +194,20 @@ def _in_play_review_count(creator: dict) -> int:
         # Unknown to our table (DB wiped, or submitted before this bot
         # deploy) means undecided, which counts as in play.
         reviews[key] = stored.get(key)
-    for key, decision in stored.items():
-        reviews.setdefault(key, decision)
+    for key, state in stored.items():
+        reviews.setdefault(key, state)
 
-    return sum(1 for decision in reviews.values() if decision != CHANGES_REQUESTED)
+    return sum(1 for state in reviews.values() if state not in NOT_IN_PLAY)
 
 
 def _stored_reviews(creator: dict) -> list[tuple[str, str | None]]:
-    """`(link key, decision)` per stored review row; empty on any DB trouble."""
+    """
+    `(link key, state)` per stored review row; empty on any DB trouble.
+
+    `state` is the row's decision, except for rows flagged ignored — those
+    report IGNORED whatever decision they carry, since an ignored submission
+    is out of play regardless of what the brand had clicked before.
+    """
     username = (creator.get("username") or "").strip().lstrip("@")
     if not username:
         return []
@@ -213,7 +228,10 @@ def _stored_reviews(creator: dict) -> list[tuple[str, str | None]]:
             query = query.filter(ReviewSubmission.campaign_name == campaign_name)
         rows = query.order_by(ReviewSubmission.id).all()
         return [
-            (_normalize_link(row.video_link) or f"db:{row.id}", row.decision)
+            (
+                _normalize_link(row.video_link) or f"db:{row.id}",
+                IGNORED if row.ignored else row.decision,
+            )
             for row in rows
         ]
     except Exception as exc:

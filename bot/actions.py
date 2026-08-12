@@ -6,24 +6,25 @@ Handles button clicks on notification messages.
 import logging
 from datetime import datetime, timezone
 
-from slack_sdk import WebClient
 from sqlalchemy.exc import IntegrityError
 
 from models.models import (
     PaymentRecord,
     ReviewSubmission,
     SessionLocal,
-    SlackInstallation,
 )
-from services import chat_service
+from services import chat_service, review_ignore, review_messages
 from services.review_approval import approve_review_core
-from templates.slack_blocks import build_review_submitted_blocks
+from templates.slack_blocks import (
+    build_review_closed_context_block,
+    build_review_ignored_blocks,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _strip_review_action_buttons(blocks: list[dict], review_id: int) -> list[dict]:
-    """Remove the Approve/Request Changes action row for this review."""
+    """Remove the Approve/Request Changes/Ignore action row for this review."""
     target_block_id = f"review_actions_{review_id}"
     return [
         b for b in blocks
@@ -31,7 +32,11 @@ def _strip_review_action_buttons(blocks: list[dict], review_id: int) -> list[dic
     ]
 
 
-def _mark_brand_review_approved(review_id: int) -> None:
+def _utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _mark_brand_review_approved(review_id: int, creator_username: str) -> None:
     """
     Reflect an INFLUENCE (admin) workspace approval on the brand's own copy of
     the review message.
@@ -42,70 +47,23 @@ def _mark_brand_review_approved(review_id: int) -> None:
     "Approved by the INFLUENCE team" footer — deliberately without naming the
     approver. Best-effort; never raises.
     """
-    # `brand_slack_ts` tracks the newest review's brand-workspace post, so
-    # only mirror when the approved review *is* that newest one — otherwise
-    # we'd rewrite a later draft's message with an older draft's outcome.
-    space = chat_service.find_by_review_id(review_id)
-    if space is None or not space.brand_slack_ts or not space.brand_slack_channel:
-        return
-    if not space.brand_install_id:
-        return
-
-    db = SessionLocal()
-    try:
-        install = db.query(SlackInstallation).get(space.brand_install_id)
-        review = db.query(ReviewSubmission).get(review_id)
-        if install is None or not install.bot_token or review is None:
-            return
-        bot_token = install.bot_token
-        creator_username = review.creator_username
-        campaign_name = review.campaign_name or ""
-        brand_name = review.brand_name or ""
-        video_link = review.video_link or ""
-        notes = review.notes or ""
-    finally:
-        db.close()
-
-    # Rebuild the brand-side card without any action buttons (review_id=None),
-    # then append the approval footer.
-    blocks = build_review_submitted_blocks(
-        creator_username=creator_username,
-        campaign_name=campaign_name,
-        brand_name=brand_name,
-        video_link=video_link,
-        notes=notes,
-        review_id=None,
-        show_meta=False,
-    )
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    blocks.append(
-        {
+    review_messages.rewrite_brand_review_message(
+        review_id,
+        with_buttons=False,
+        footer={
             "type": "context",
             "elements": [
                 {
                     "type": "mrkdwn",
                     "text": (
                         f":white_check_mark: *Approved by the INFLUENCE team* — "
-                        f"@{creator_username} ({timestamp})"
+                        f"@{creator_username} ({_utc_stamp()})"
                     ),
                 }
             ],
-        }
+        },
+        text=f"Review approved for @{creator_username}",
     )
-
-    try:
-        WebClient(token=bot_token).chat_update(
-            channel=space.brand_slack_channel,
-            ts=space.brand_slack_ts,
-            text=f"Review approved for @{creator_username}",
-            blocks=blocks,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Could not update brand review message on admin approval "
-            "(review_id=%s): %s",
-            review_id, exc,
-        )
 
 
 def register_actions(app):
@@ -255,6 +213,19 @@ def register_actions(app):
                     response_type="ephemeral",
                 )
                 return
+            if row.ignored:
+                # Only reachable from a stale message — ignoring strips the
+                # buttons on both copies. Approving anyway would email the
+                # creator about a submission we've decided isn't real.
+                respond(
+                    text=(
+                        ":no_bell: This submission is marked as ignored. Use "
+                        "*Undo ignore* on the #content-reviews message first if "
+                        "it should be reviewed after all."
+                    ),
+                    response_type="ephemeral",
+                )
+                return
             creator_username = row.creator_username
             # Slack coordinates of the admin (#content-reviews) copy, captured
             # when it was posted. Used below to tell whether this click came
@@ -278,7 +249,6 @@ def register_actions(app):
         # the click's channel/ts; the auto-approval path has no such
         # message to update.
         updated_blocks = _strip_review_action_buttons(original_blocks, review_id)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         updated_blocks.append(
             {
                 "type": "context",
@@ -287,7 +257,7 @@ def register_actions(app):
                         "type": "mrkdwn",
                         "text": (
                             f":white_check_mark: *Approved* by <@{actor_id}> — "
-                            f"@{creator_username} ({timestamp})"
+                            f"@{creator_username} ({_utc_stamp()})"
                         ),
                     }
                 ],
@@ -313,7 +283,7 @@ def register_actions(app):
         clicked_from_admin = bool(ts and admin_slack_ts and ts == admin_slack_ts)
         if clicked_from_admin:
             try:
-                _mark_brand_review_approved(review_id)
+                _mark_brand_review_approved(review_id, creator_username)
             except Exception as exc:
                 logger.warning(
                     "Failed to mirror admin approval to brand workspace "
@@ -333,7 +303,7 @@ def register_actions(app):
     # updates the footer.
     # ------------------------------------------------------------------
     @app.action("review_request_changes")
-    def handle_review_request_changes(ack, body, client):
+    def handle_review_request_changes(ack, body, client, respond):
         ack()
 
         user = body.get("user", {})
@@ -366,6 +336,22 @@ def register_actions(app):
                 logger.info(
                     f"review_request_changes ignored: review {review_id} "
                     f"already approved"
+                )
+                return
+            if row.ignored:
+                # Same stale-message case: the INFLUENCE team took this
+                # submission out of play, so don't record a decision on it.
+                logger.info(
+                    f"review_request_changes skipped: review {review_id} "
+                    f"is marked as ignored"
+                )
+                respond(
+                    text=(
+                        ":no_bell: The INFLUENCE team closed this submission — "
+                        "no review is needed. Ask them to reopen it if that's "
+                        "wrong."
+                    ),
+                    response_type="ephemeral",
                 )
                 return
 
@@ -414,7 +400,6 @@ def register_actions(app):
         # per click would only clutter the message.
         if first_time and channel_id and ts:
             updated_blocks = list(original_blocks)
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             updated_blocks.append(
                 {
                     "type": "context",
@@ -423,7 +408,7 @@ def register_actions(app):
                             "type": "mrkdwn",
                             "text": (
                                 f":pencil2: *Chat opened* by <@{actor_id}> — "
-                                f"@{creator_username} ({timestamp})"
+                                f"@{creator_username} ({_utc_stamp()})"
                             ),
                         }
                     ],
@@ -445,4 +430,190 @@ def register_actions(app):
             f"review_request_changes: review_id={review_id} "
             f"creator=@{creator_username} actor=@{actor_name} "
             f"first_time={first_time}"
+        )
+
+    # ------------------------------------------------------------------
+    # Review: Ignore  (INFLUENCE workspace only)
+    #
+    # For submissions that were never meant to be reviewed — a creator
+    # pasting the wrong link, a duplicate, a test. Takes the review out of
+    # play: no 24h auto-approval, and it stops covering the creator's
+    # deliverables so their deadline reminders keep going out. The button
+    # is only rendered on the admin copy of the message
+    # (`include_ignore=True`), so a brand never sees it.
+    # ------------------------------------------------------------------
+    @app.action("review_ignore")
+    def handle_review_ignore(ack, body, client, respond):
+        ack()
+
+        user = body.get("user", {})
+        actor_id = user.get("id", "")
+        actor_name = user.get("username") or user.get("name") or actor_id
+
+        action = (body.get("actions") or [{}])[0]
+        try:
+            review_id = int(action.get("value", ""))
+        except (TypeError, ValueError):
+            logger.warning("review_ignore clicked with non-integer value")
+            return
+
+        result = review_ignore.ignore_review(
+            review_id=review_id, actor_id=actor_id, actor_name=actor_name,
+        )
+        if result != review_ignore.IGNORED:
+            respond(
+                text={
+                    review_ignore.ALREADY_IGNORED:
+                        ":no_bell: This submission is already ignored.",
+                    review_ignore.ALREADY_APPROVED:
+                        ":information_source: This review is already approved, "
+                        "so there's nothing left to hold back.",
+                    review_ignore.NOT_FOUND:
+                        ":warning: Could not find that review in the database.",
+                }.get(result, ":warning: Could not ignore that review."),
+                response_type="ephemeral",
+            )
+            return
+
+        card = review_messages.load_review_card(review_id)
+        creator_username = card.creator_username if card else ""
+
+        # Swap the action row for the ignored footer + an Undo button, so a
+        # mistaken click is one click to reverse.
+        channel_id = (body.get("channel") or {}).get("id")
+        message = body.get("message") or {}
+        ts = message.get("ts")
+        updated_blocks = _strip_review_action_buttons(
+            message.get("blocks") or [], review_id,
+        )
+        updated_blocks.extend(
+            build_review_ignored_blocks(
+                review_id=review_id,
+                creator_username=creator_username,
+                actor_label=f"<@{actor_id}>" if actor_id else actor_name,
+                timestamp=_utc_stamp(),
+            )
+        )
+        if channel_id and ts:
+            try:
+                client.chat_update(
+                    channel=channel_id,
+                    ts=ts,
+                    text=f"Review ignored for @{creator_username}",
+                    blocks=updated_blocks,
+                )
+            except Exception as e:
+                logger.error(f"Failed to update message after review_ignore: {e}")
+
+        # The brand is still looking at a live Approve / Request Changes
+        # message for a submission we've decided isn't real — take their
+        # buttons away too, with a neutral note.
+        try:
+            review_messages.rewrite_brand_review_message(
+                review_id,
+                with_buttons=False,
+                footer=build_review_closed_context_block(
+                    creator_username=creator_username, timestamp=_utc_stamp(),
+                ),
+                text=f"No review needed for @{creator_username}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to mirror ignore to brand workspace (review_id=%s): %s",
+                review_id, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # Review: Undo ignore
+    #
+    # Puts the review back exactly as it was — the ignore flag is separate
+    # from `decision`, so a draft that was already in "changes requested"
+    # returns to that state. The 24h clock is not restarted: it measures how
+    # long the brand has been silent, which an ignore we've taken back
+    # doesn't change. A review that sat ignored past the 24h mark can
+    # therefore be auto-approved by the next sweep.
+    # ------------------------------------------------------------------
+    @app.action("review_unignore")
+    def handle_review_unignore(ack, body, client, respond):
+        ack()
+
+        user = body.get("user", {})
+        actor_id = user.get("id", "")
+        actor_name = user.get("username") or user.get("name") or actor_id
+
+        action = (body.get("actions") or [{}])[0]
+        try:
+            review_id = int(action.get("value", ""))
+        except (TypeError, ValueError):
+            logger.warning("review_unignore clicked with non-integer value")
+            return
+
+        result = review_ignore.restore_review(review_id=review_id)
+        if result != review_ignore.RESTORED:
+            respond(
+                text={
+                    review_ignore.NOT_IGNORED:
+                        ":information_source: This review isn't ignored.",
+                    review_ignore.NOT_FOUND:
+                        ":warning: Could not find that review in the database.",
+                }.get(result, ":warning: Could not restore that review."),
+                response_type="ephemeral",
+            )
+            return
+
+        card = review_messages.load_review_card(review_id)
+        if card is None:
+            return
+        creator_username = card.creator_username
+
+        # Rebuild the admin card from scratch: the ignored message has no
+        # footer worth keeping, and the action row has to come back.
+        restored_blocks = review_messages.build_admin_blocks(card)
+        restored_blocks.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": (
+                            f":leftwards_arrow_with_hook: *Ignore undone* by "
+                            f"<@{actor_id}> — back in review ({_utc_stamp()})"
+                        ),
+                    }
+                ],
+            }
+        )
+        channel_id = (body.get("channel") or {}).get("id")
+        message = body.get("message") or {}
+        ts = message.get("ts")
+        if channel_id and ts:
+            try:
+                client.chat_update(
+                    channel=channel_id,
+                    ts=ts,
+                    text=f"Review back in play for @{creator_username}",
+                    blocks=restored_blocks,
+                )
+            except Exception as e:
+                logger.error(f"Failed to update message after review_unignore: {e}")
+
+        # Give the brand their buttons back.
+        try:
+            review_messages.rewrite_brand_review_message(
+                review_id,
+                with_buttons=True,
+                text=(
+                    f"New review submitted by @{creator_username} "
+                    f"for {card.campaign_name}"
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to restore brand review message (review_id=%s): %s",
+                review_id, exc,
+            )
+
+        logger.info(
+            "review_unignore: review_id=%s creator=@%s actor=@%s",
+            review_id, creator_username, actor_name,
         )

@@ -32,6 +32,7 @@ from services.reelstats_api import ReelStatsAPI
 from services.email_service import EmailService, EmailSendResult
 from services.review_approval import run_auto_approval_sweep
 from services.review_coverage import review_coverage
+from services.review_ignore import backfill_ignore_buttons
 from templates.slack_blocks import (
     _format_upload_date,
     build_milestone_blocks,
@@ -98,6 +99,21 @@ class SchedulerService:
             trigger=IntervalTrigger(minutes=30),
             id="auto_approval_sweep",
             name="Auto-approve reviews stale for 24h",
+            replace_existing=True,
+        )
+
+        # One-shot, shortly after boot: re-render the review messages still
+        # awaiting a decision in #content-reviews so they pick up the Ignore
+        # button, which reviews posted before it shipped don't have. Runs off
+        # the request path (it talks to Slack) and is idempotent, so repeating
+        # it on every deploy is harmless — and covers anything a previous run
+        # couldn't reach.
+        self.scheduler.add_job(
+            backfill_ignore_buttons,
+            trigger="date",
+            run_date=datetime.now() + timedelta(seconds=20),
+            id="ignore_button_backfill",
+            name="Add the Ignore button to pending review messages",
             replace_existing=True,
         )
 

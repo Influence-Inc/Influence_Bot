@@ -45,6 +45,7 @@ def init_db():
     _migrate_chat_spaces_creator_invited_at()
     _migrate_chat_spaces_admin_slack_ts()
     _migrate_review_submissions_submit_posts_url()
+    _migrate_review_submissions_ignored()
     _migrate_chat_messages_events()
 
 
@@ -84,6 +85,41 @@ def _migrate_review_submissions_submit_posts_url():
         conn.execute(text(
             "ALTER TABLE review_submissions ADD COLUMN submit_posts_url TEXT"
         ))
+
+
+def _migrate_review_submissions_ignored():
+    """
+    Add the "ignored" columns to `review_submissions` on pre-column deploys
+    and backfill existing rows as not-ignored. Idempotent.
+
+    The flag is written with a bound parameter rather than a DDL default so
+    the same statement works on SQLite (0/1) and Postgres (FALSE).
+    """
+    inspector = inspect(engine)
+    if "review_submissions" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("review_submissions")}
+    with engine.begin() as conn:
+        if "ignored" not in cols:
+            conn.execute(text(
+                "ALTER TABLE review_submissions ADD COLUMN ignored BOOLEAN"
+            ))
+            conn.execute(
+                text("UPDATE review_submissions SET ignored = :f WHERE ignored IS NULL"),
+                {"f": False},
+            )
+        if "ignored_at" not in cols:
+            conn.execute(text(
+                "ALTER TABLE review_submissions ADD COLUMN ignored_at TIMESTAMP"
+            ))
+        if "ignored_by_id" not in cols:
+            conn.execute(text(
+                "ALTER TABLE review_submissions ADD COLUMN ignored_by_id VARCHAR(255)"
+            ))
+        if "ignored_by_name" not in cols:
+            conn.execute(text(
+                "ALTER TABLE review_submissions ADD COLUMN ignored_by_name VARCHAR(255)"
+            ))
 
 
 def _migrate_chat_spaces_creator_invited_at():
@@ -375,6 +411,20 @@ class ReviewSubmission(Base):
     decided_by_id = Column(String(255), nullable=True)
     decided_by_name = Column(String(255), nullable=True)
     decided_at = Column(DateTime, nullable=True)
+
+    # Set by the INFLUENCE team's "Ignore" button in our own workspace, for
+    # submissions that were never meant to be reviewed (a creator pasting the
+    # wrong link, a duplicate, a test). An ignored review is out of play: the
+    # 24h auto-approval sweep skips it, and it stops counting as a video in
+    # review — so the creator keeps getting their deadline reminders.
+    #
+    # Deliberately a separate flag rather than a `decision` value: the review
+    # may already carry a real decision (changes_requested), and "Undo ignore"
+    # has to put that decision back exactly as it was.
+    ignored = Column(Boolean, nullable=True, default=False)
+    ignored_at = Column(DateTime, nullable=True)
+    ignored_by_id = Column(String(255), nullable=True)
+    ignored_by_name = Column(String(255), nullable=True)
 
     comments = relationship("ReviewComment", back_populates="review", cascade="all, delete-orphan")
 
