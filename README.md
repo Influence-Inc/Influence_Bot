@@ -38,7 +38,8 @@ INFLUENCE Bot
 │   ├── email_service.py            # Resend HTTPS email sending (jennifer@useinfluence.xyz)
 │   ├── brand_routing.py            # Maps Slack workspaces <-> brands for per-brand notifications
 │   ├── slack_oauth.py              # Per-brand install links + OAuth callback
-│   └── chat_service.py             # Creator <-> brand chat spaces
+│   ├── chat_service.py             # Creator <-> brand chat spaces
+│   └── ai_drafts.py                # Claude-drafted reply options for the admin composer
 ├── models/
 │   └── models.py                   # SQLAlchemy models (installs, reviews, dedup + chat tables)
 ├── templates/
@@ -112,6 +113,9 @@ Required environment variables:
 - `SLACK_SIGNING_SECRET` — From Slack App settings
 - `SLACK_CHANNEL_ID` — Fallback channel for notifications (per-type channels optional; see `config.py`)
 - `RESEND_API_KEY` — Resend HTTPS API key for `jennifer@useinfluence.xyz` (Railway blocks outbound SMTP)
+
+Optional:
+- `ANTHROPIC_API_KEY` — enables the ✨ AI-draft button in the admin chat composer (see below); unset leaves the feature off
 
 ### 3. Create Slack App
 
@@ -295,4 +299,5 @@ Hitting that route 302s the brand to Slack's consent screen.
 - **One chat space per campaign** — A creator's chat opens on their first submission and is reused for every draft on that campaign, so earlier feedback stays on screen. Approving a draft posts a notice in the chat instead of closing it; the space is archived when the campaign ends
 - **Draft cards in the chat** — Each new video submitted for review lands in the chat as a card (draft number, source, tap to watch) on the creator's side of the conversation
 - **Draft link previews** — The card shows a real thumbnail of the video. The server resolves the link (Google Drive, YouTube, Vimeo and Loom via their thumbnail endpoints; anything else via the page's `og:image`), fetches the image and serves it from our own origin, so the preview works regardless of hotlink rules and the creator's URL never leaves the server. Previews are cached for 6h; a link with no usable preview (an unshared Drive file, say) quietly keeps the placeholder artwork
+- **AI-drafted admin replies** — The ✨ button in the admin composer asks Claude for a few sendable replies built from that chat's own transcript, and they land above the composer as tappable iMessage-style bubbles. Picking one drops it in the composer to edit and send by hand — nothing is ever posted automatically, and creators and brands never see the button. Anything already typed in the composer is passed along as a steer ("push the Friday deadline"). Set `ANTHROPIC_API_KEY` to switch it on (optional: `CLAUDE_MODEL`, `CLAUDE_EFFORT`, `CLAUDE_MAX_TOKENS`, `AI_DRAFT_CONTEXT_MESSAGES`); with the key unset the button isn't rendered and the chat is otherwise unchanged
 - **Team & brand stay notified of chat activity** — Every creator/brand chat message pings `#content-reviews`, threaded under the review post so the conversation stays grouped. Because Slack doesn't notify anyone of a thread reply they aren't following, inbound (creator/brand) messages are also broadcast to the channel so the team actually sees them; the team's own admin-sent replies stay quiet threaded posts. Set `SLACK_REVIEWS_NOTIFY` (a user-group, user, or `<!here>`/`<!channel>` mention) to add a hard ping on inbound messages even when the channel is muted. The same broadcast applies to the brand's own workspace ping (creator/admin messages), so brands aren't left watching a silent thread either

@@ -145,6 +145,19 @@ class Config:
     # they need to outlive the typical 7-day creator link. Default 90 days.
     CHAT_BRAND_LINK_TTL = int(os.environ.get("CHAT_BRAND_LINK_TTL", str(90 * 24 * 3600)))
 
+    # --- AI drafting (Anthropic / Claude) ---
+    # Powers the "draft with AI" button on the admin side of the review chat.
+    # With ANTHROPIC_API_KEY unset the button isn't rendered and the endpoint
+    # answers 503 — the chat itself is unaffected.
+    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+    CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5")
+    CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "4000"))
+    # Thinking depth / token spend: low | medium | high | xhigh | max. Drafting
+    # a two-line chat reply is routine work, so "low" keeps the composer snappy.
+    CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "low")
+    # How many recent chat messages are fed to the model as context.
+    AI_DRAFT_CONTEXT_MESSAGES = int(os.environ.get("AI_DRAFT_CONTEXT_MESSAGES", "40"))
+
     # --- Testing ---
     # If set, the bot only processes the campaign with this exact name.
     # Leave empty/unset in production to process all campaigns.

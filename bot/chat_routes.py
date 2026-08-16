@@ -9,6 +9,7 @@ Routes:
   GET  /chat/<space_id>/messages      — poll for new messages (?since=<id>)
   POST /chat/<space_id>/messages      — submit message (+ optional attachment)
   POST /chat/<space_id>/messages/<id>/react — toggle a reaction
+  POST /chat/<space_id>/ai-draft       — admin-only: AI-drafted reply options
   POST /chat/<space_id>/read          — mark messages read up to id
   GET  /chat/<space_id>/link-preview/<msg_id> — thumbnail for a draft link
   GET  /chat/attachment/<id>          — serve a stored attachment
@@ -42,7 +43,7 @@ from flask import (
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from config import Config
-from services import chat_service, link_preview
+from services import ai_drafts, chat_service, link_preview
 from services.chat_pubsub import maybe_publish_typing, subscribe as pubsub_subscribe
 from services.chat_service import (
     archive_for_campaign,
@@ -305,6 +306,7 @@ def chat_page(slug: str):
         chat_title=chat_title,
         initial_read_state=initial_read,
         is_admin=(sess.party == ADMIN_PARTY),
+        ai_drafts_enabled=ai_drafts.is_configured(),
     )
     return Response(html, mimetype="text/html")
 
@@ -454,6 +456,73 @@ def chat_message_edit(slug: str, message_id: int):
     if not ok:
         return jsonify({"error": "not_found"}), 404
     return jsonify({"ok": True})
+
+
+# AI drafting is an admin tool that costs a model call per press, so it gets a
+# much tighter bucket than the 30/min message limit.
+_AI_RATE_BUCKET: dict[int, list[float]] = {}
+_AI_RATE_LIMIT = 10
+_AI_RATE_WINDOW = 60.0
+
+# DraftError codes -> HTTP status. Everything the admin can act on (missing
+# config, rate limit) is distinguishable from a transient upstream failure.
+_DRAFT_STATUS = {
+    "not_found": 404,
+    "not_configured": 503,
+    "sdk_missing": 503,
+    "auth": 503,
+    "rate_limited": 429,
+    "refused": 422,
+    "upstream": 502,
+    "empty": 502,
+}
+
+
+def _ai_rate_limited(session_id: int) -> bool:
+    now = time.time()
+    bucket = _AI_RATE_BUCKET.setdefault(session_id, [])
+    cutoff = now - _AI_RATE_WINDOW
+    while bucket and bucket[0] < cutoff:
+        bucket.pop(0)
+    if len(bucket) >= _AI_RATE_LIMIT:
+        return True
+    bucket.append(now)
+    return False
+
+
+@bp.route("/chat/<slug>/ai-draft", methods=["POST"])
+def chat_ai_draft(slug: str):
+    """Admin-only: reply options drafted from the chat's own transcript.
+
+    Returns `{"drafts": [...]}`. Nothing is posted — the admin picks one, it
+    lands in the composer, and it's sent through the normal message endpoint
+    (or edited first). Creator/brand sessions are rejected, same as edit."""
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
+    if err is not None:
+        return err
+    if getattr(sess, "party", None) != ADMIN_PARTY:
+        return jsonify({"error": "forbidden"}), 403
+    # Nothing can be sent in a closed chat, so don't spend a model call on one.
+    if space.status != "active":
+        return jsonify({"error": "chat_closed"}), 410
+    if _ai_rate_limited(sess.id):
+        return jsonify({"error": "rate_limited", "message": "Slow down a moment."}), 429
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        drafts = ai_drafts.draft_replies(
+            chat_space_id=space.id,
+            instruction=(payload.get("instruction") or ""),
+        )
+    except ai_drafts.DraftError as exc:
+        return (
+            jsonify({"error": exc.code, "message": exc.message}),
+            _DRAFT_STATUS.get(exc.code, 502),
+        )
+    return jsonify({"drafts": drafts})
 
 
 @bp.route("/chat/<slug>/stream", methods=["GET"])
@@ -720,6 +789,7 @@ def admin_chat_view(space_id: int):
         chat_title=_format_chat_space_title(space),
         initial_read_state=initial_read,
         is_admin=True,
+        ai_drafts_enabled=ai_drafts.is_configured(),
     )
     return Response(html, mimetype="text/html")
 
