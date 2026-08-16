@@ -229,6 +229,7 @@ def test_draft_replies_sends_transcript_and_returns_cleaned_drafts():
     assert call["output_config"]["effort"] == Config.CLAUDE_EFFORT
     assert call["output_config"]["format"]["type"] == "json_schema"
     # Persona is cached in `system`; per-space context rides in the user turn.
+    assert call["system"][0]["text"] == ai_drafts.SYSTEM_PROMPT
     assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
     prompt = call["messages"][0]["content"]
     assert "Maya (Reve, brand): Can we see a revised cut?" in prompt

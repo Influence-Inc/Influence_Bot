@@ -152,9 +152,11 @@ class Config:
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
     CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5")
     CLAUDE_MAX_TOKENS = int(os.environ.get("CLAUDE_MAX_TOKENS", "4000"))
-    # Thinking depth / token spend: low | medium | high | xhigh | max. Drafting
-    # a two-line chat reply is routine work, so "low" keeps the composer snappy.
-    CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "low")
+    # Thinking depth / token spend: low | medium | high | xhigh | max. A draft
+    # has to read the thread, decide what to actually ask for and land a
+    # specific voice, so "medium" buys noticeably better replies than "low"
+    # without making the composer feel slow.
+    CLAUDE_EFFORT = os.environ.get("CLAUDE_EFFORT", "medium")
     # How many recent chat messages are fed to the model as context.
     AI_DRAFT_CONTEXT_MESSAGES = int(os.environ.get("AI_DRAFT_CONTEXT_MESSAGES", "40"))
 

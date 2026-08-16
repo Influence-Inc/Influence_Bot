@@ -228,8 +228,10 @@ CHAT_PAGE = """\
     .drafts-head .sp{flex:1}
     .drafts-head button{font-size:11px;color:#007AFF;padding:2px 2px;letter-spacing:-.005em}
     .drafts-head button:disabled{color:var(--muted);cursor:not-allowed}
+    /* Real feedback messages run several paragraphs, so the sheet gets enough
+       room to show one in full and scrolls for the rest. */
     .drafts-list{display:flex;flex-direction:column;align-items:flex-start;gap:6px;
-      max-height:40vh;overflow-y:auto}
+      max-height:46vh;overflow-y:auto}
     /* Same measure as a message bubble, so a draft reads as the message it is
        about to become rather than as a banner across the column. */
     .draft{background:var(--recv-bg);color:var(--recv-fg);border-radius:20px;
@@ -1017,8 +1019,12 @@ CHAT_PAGE = """\
       draftsEl.innerHTML = '';
       aiBtn.classList.remove('on');
     }
-    function draftsHead(busy){
-      return '<div class="drafts-head"><span>Suggested replies — tap to use</span>' +
+    // `count` says how many are in the sheet — a full feedback reply can be
+    // several paragraphs, so the ones below the fold need announcing.
+    function draftsHead(busy, count){
+      var label = count ? 'Suggested replies (' + count + ') — tap to use'
+                        : 'Suggested replies — tap to use';
+      return '<div class="drafts-head"><span>' + label + '</span>' +
         '<span class="sp"></span>' +
         '<button type="button" data-act="again"' + (busy ? ' disabled' : '') + '>Regenerate</button>' +
         '<button type="button" data-act="close">Dismiss</button></div>';
@@ -1042,7 +1048,7 @@ CHAT_PAGE = """\
     }
     function renderDrafts(list){
       lastDrafts = list;
-      var html = draftsHead(false) + '<div class="drafts-list">';
+      var html = draftsHead(false, list.length) + '<div class="drafts-list">';
       for(var i=0;i<list.length;i++){
         html += '<button type="button" class="draft" data-i="' + i + '">' +
           escapeHtml(list[i]) + '</button>';
