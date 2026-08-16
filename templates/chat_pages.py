@@ -211,11 +211,13 @@ CHAT_PAGE = """\
       font-size:11px;color:var(--muted);text-align:center;letter-spacing:-.005em}
 
     /* ── AI DRAFTS (admin only) ──
-       Suggested replies sit above the composer as received-style bubbles —
-       the same grey pill the other side's messages arrive in — so picking one
+       A sheet above the composer: say what you want to get across in the
+       intent field, and the drafts come back as received-style bubbles — the
+       same grey pill the other side's messages arrive in — so picking one
        reads as lifting a message out of the thread rather than operating a
-       separate tool. Tapping a bubble fills the composer; nothing sends until
-       the admin presses send. */
+       separate tool. Each bubble can be edited in place (the same
+       contenteditable trick as admin silent-edit) before it's used. Tapping a
+       bubble fills the composer; nothing sends until the admin presses send. */
     .ai-btn{width:38px;height:38px;border-radius:99px;background:var(--recv-bg);color:var(--sent-bg);
       display:flex;align-items:center;justify-content:center;flex-shrink:0;
       transition:background .16s ease,color .16s ease}
@@ -228,17 +230,38 @@ CHAT_PAGE = """\
     .drafts-head .sp{flex:1}
     .drafts-head button{font-size:11px;color:#007AFF;padding:2px 2px;letter-spacing:-.005em}
     .drafts-head button:disabled{color:var(--muted);cursor:not-allowed}
+
+    /* Intent field — "what do you want to say?". Same pill as the composer so
+       it reads as a place to type, one row up. */
+    .intent{background:#fff;border:.5px solid var(--line-2);border-radius:22px;
+      padding:6px 6px 6px 16px;display:flex;align-items:flex-end;gap:6px;min-height:38px;
+      margin-bottom:8px}
+    .intent .editable{font-size:15px;max-height:96px}
+    .intent-go{width:28px;height:28px;border-radius:99px;background:var(--sent-bg);color:#fff;
+      display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-bottom:2px}
+    .intent-go:disabled{background:#C7C7CC;cursor:not-allowed}
     /* Real feedback messages run several paragraphs, so the sheet gets enough
        room to show one in full and scrolls for the rest. */
     .drafts-list{display:flex;flex-direction:column;align-items:flex-start;gap:6px;
       max-height:46vh;overflow-y:auto}
     /* Same measure as a message bubble, so a draft reads as the message it is
        about to become rather than as a banner across the column. */
-    .draft{background:var(--recv-bg);color:var(--recv-fg);border-radius:20px;
+    .draft-row{display:flex;align-items:flex-end;gap:6px;max-width:100%}
+    /* A div, not a button: space is a button's activation key, so a <button>
+       can't take a typed space once it's contenteditable. */
+    .draft{background:var(--recv-bg);color:var(--recv-fg);border-radius:20px;cursor:pointer;
       padding:9px 16px;font-size:16px;line-height:1.3;letter-spacing:-.01em;text-align:left;
       white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;max-width:min(100%,480px);
       transition:transform .14s cubic-bezier(.32,.72,0,1),background .14s ease}
+    .draft:focus-visible{outline:2px solid #007AFF;outline-offset:1px}
     .draft:active{transform:scale(.98);background:#DEDEE1}
+    /* Editing a draft in place — same blue outline as an admin silent edit. */
+    .draft.editing{outline:2px solid #007AFF;outline-offset:1px;cursor:text;background:var(--recv-bg);
+      -webkit-user-select:text;user-select:text}
+    .draft.editing:active{transform:none}
+    .draft-edit{width:26px;height:26px;border-radius:99px;background:var(--recv-bg);color:#3C3C43;
+      display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-bottom:3px}
+    .draft-row.editing .draft-edit{background:#007AFF;color:#fff}
     .draft-note{font-size:11px;color:var(--muted);padding:2px 4px}
     .draft-note.err{color:#991B1B}
     .draft-load{display:inline-flex;align-items:center;gap:5px;background:var(--recv-bg);
@@ -348,7 +371,7 @@ CHAT_PAGE = """\
           </button>
         </div>
       </div>
-      <div class="notify-hint">{% if is_admin %}Posting as Influence — @{{ space.creator_username }} and {{ space.brand_name or 'the brand' }} will be notified · double-click a message to edit it silently{% if ai_drafts_enabled %} · ✨ drafts a reply, type a note first to steer it{% endif %}{% elif self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
+      <div class="notify-hint">{% if is_admin %}Posting as Influence — @{{ space.creator_username }} and {{ space.brand_name or 'the brand' }} will be notified · double-click a message to edit it silently{% if ai_drafts_enabled %} · ✨ to draft with AI — say what you want to get across{% endif %}{% elif self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
     </div>
 
   </div>
@@ -1006,83 +1029,175 @@ CHAT_PAGE = """\
   }
 
   // ── AI drafts (admin) ──────────────────────────────────────────────────
-  // The composer doubles as the steer: whatever is typed when the button is
-  // pressed is sent along as a note ("push the Friday deadline"), and picking
-  // a draft replaces it. Drafts are never sent for you — they land in the
-  // composer to edit and send by hand.
+  // Two ways in: say what you want to get across in the intent field and let
+  // it write that, or leave the field empty and get replies read off the
+  // conversation. Either way the drafts are editable in place before use, and
+  // nothing is ever sent for you — picking one fills the composer.
+  //
+  // The sheet's shell (head + intent field + list) is built once and only the
+  // list is re-rendered, so regenerating never wipes what you typed.
   if(isAdmin && aiBtn && draftsEl){
     var draftsOpen = false, draftsBusy = false, lastDrafts = [];
+    var intentEl = null, goBtn = null, listEl = null;
 
+    var SPARK = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.6l1.5 4.4 4.4 1.5-4.4 1.5L12 14.4l-1.5-4.4L6.1 8.5l4.4-1.5L12 2.6z"></path><path d="M18.4 13.6l.85 2.45 2.45.85-2.45.85-.85 2.45-.85-2.45-2.45-.85 2.45-.85.85-2.45z"></path></svg>';
+    var PENCIL_BTN = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"></path></svg>';
+    var CHECK_BTN = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+    function setEmpty(el){
+      el.setAttribute('data-empty', (el.innerText || '').trim() ? 'false' : 'true');
+    }
+    function intentText(){
+      if(!intentEl) return '';
+      return (intentEl.innerText || '').replace(/\\r\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+    }
+    function setBusy(on){
+      draftsBusy = on;
+      if(goBtn) goBtn.disabled = on;
+    }
+    function setList(html){
+      if(listEl){ listEl.innerHTML = html; pinToBottom(); }
+    }
+
+    function openDrafts(){
+      if(draftsOpen) return;
+      draftsOpen = true;
+      aiBtn.classList.add('on');
+      draftsEl.classList.add('on');
+      draftsEl.innerHTML =
+        '<div class="drafts-head"><span>Draft with AI</span><span class="sp"></span>' +
+          '<button type="button" data-act="close">Dismiss</button></div>' +
+        '<div class="intent">' +
+          '<div class="editable" id="intentInput" contenteditable="true" role="textbox" ' +
+            'data-empty="true" aria-label="What do you want to say?" ' +
+            'data-placeholder="What do you want to say?"></div>' +
+          '<button type="button" class="intent-go" data-act="draft" title="Draft" ' +
+            'aria-label="Draft">' + SPARK + '</button>' +
+        '</div>' +
+        '<div class="drafts-list" id="draftsList"></div>';
+      intentEl = document.getElementById('intentInput');
+      goBtn = draftsEl.querySelector('.intent-go');
+      listEl = document.getElementById('draftsList');
+      // Carry over anything already typed in the composer — it's usually the
+      // note you were about to turn into a message anyway.
+      var carried = getBody();
+      if(carried) intentEl.textContent = carried;
+      setEmpty(intentEl);
+      intentEl.addEventListener('input', function(){ setEmpty(intentEl); });
+      intentEl.addEventListener('keydown', function(e){
+        if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); requestDrafts(); }
+      });
+      intentEl.addEventListener('paste', function(e){
+        e.preventDefault();
+        var t = (e.clipboardData || window.clipboardData).getData('text');
+        document.execCommand('insertText', false, t);
+      });
+      intentEl.focus();
+      pinToBottom();
+    }
     function closeDrafts(){
       draftsOpen = false;
       draftsEl.classList.remove('on');
       draftsEl.innerHTML = '';
+      intentEl = goBtn = listEl = null;
       aiBtn.classList.remove('on');
     }
-    // `count` says how many are in the sheet — a full feedback reply can be
-    // several paragraphs, so the ones below the fold need announcing.
-    function draftsHead(busy, count){
-      var label = count ? 'Suggested replies (' + count + ') — tap to use'
-                        : 'Suggested replies — tap to use';
-      return '<div class="drafts-head"><span>' + label + '</span>' +
-        '<span class="sp"></span>' +
-        '<button type="button" data-act="again"' + (busy ? ' disabled' : '') + '>Regenerate</button>' +
-        '<button type="button" data-act="close">Dismiss</button></div>';
+
+    function loadingHtml(){
+      return '<div class="draft-load">' +
+        '<span class="dot"></span><span class="dot"></span><span class="dot"></span></div>';
     }
-    function showDraftsLoading(){
-      draftsOpen = true;
-      aiBtn.classList.add('on');
-      draftsEl.classList.add('on');
-      draftsEl.innerHTML = draftsHead(true) +
-        '<div class="drafts-list"><div class="draft-load">' +
-        '<span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>';
-      // The sheet grows the sticky bar, so re-pin — otherwise the message
-      // being replied to slides out of view behind it.
-      pinToBottom();
+    function errorHtml(message){
+      return '<div class="draft-note err">' +
+        escapeHtml(message || 'Couldn\\'t draft a reply. Try again.') + '</div>';
     }
-    function showDraftsError(message){
-      draftsEl.innerHTML = draftsHead(false) +
-        '<div class="drafts-list"><div class="draft-note err">' +
-        escapeHtml(message || 'Couldn\\'t draft a reply. Try again.') + '</div></div>';
-      pinToBottom();
-    }
-    function renderDrafts(list){
-      lastDrafts = list;
-      var html = draftsHead(false, list.length) + '<div class="drafts-list">';
+    // A full feedback reply runs several paragraphs, so the ones below the
+    // fold need announcing.
+    function draftsHtml(list){
+      var html = '<div class="draft-note">' + list.length +
+        (list.length === 1 ? ' draft' : ' drafts') + ' — tap to use, ✎ to edit</div>';
       for(var i=0;i<list.length;i++){
-        html += '<button type="button" class="draft" data-i="' + i + '">' +
-          escapeHtml(list[i]) + '</button>';
+        html += '<div class="draft-row" data-i="' + i + '">' +
+          '<div class="draft" role="button" tabindex="0">' + escapeHtml(list[i]) + '</div>' +
+          '<button type="button" class="draft-edit" title="Edit" aria-label="Edit draft">' +
+            PENCIL_BTN + '</button>' +
+        '</div>';
       }
-      html += '</div>';
-      draftsEl.innerHTML = html;
-      pinToBottom();
+      return html;
     }
+
+    // ── Edit a draft in place ──
+    // Same contenteditable trick as an admin silent edit, so the gesture is
+    // one the admin already knows. Enter inserts a line break (these are
+    // multi-paragraph messages); the ✓ button or Esc commits.
+    function isEditing(row){ return row.classList.contains('editing'); }
+    function beginDraftEdit(row){
+      if(isEditing(row)) return;
+      var bubble = row.querySelector('.draft');
+      var btn = row.querySelector('.draft-edit');
+      row.classList.add('editing');
+      bubble.classList.add('editing');
+      bubble.setAttribute('contenteditable', 'true');
+      bubble.setAttribute('role', 'textbox');
+      btn.innerHTML = CHECK_BTN;
+      btn.title = 'Done';
+      btn.setAttribute('aria-label', 'Done editing');
+      bubble.focus();
+      try{
+        var range = document.createRange(); range.selectNodeContents(bubble); range.collapse(false);
+        var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      }catch(e){}
+    }
+    function endDraftEdit(row){
+      if(!isEditing(row)) return;
+      var i = parseInt(row.dataset.i, 10);
+      var bubble = row.querySelector('.draft');
+      var btn = row.querySelector('.draft-edit');
+      var next = (bubble.innerText || '').replace(/\\r\\n/g, '\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+      if(next) lastDrafts[i] = next;
+      bubble.textContent = lastDrafts[i];   // back to plain text; pre-wrap keeps the breaks
+      bubble.removeAttribute('contenteditable');
+      bubble.setAttribute('role', 'button');
+      bubble.classList.remove('editing');
+      row.classList.remove('editing');
+      btn.innerHTML = PENCIL_BTN;
+      btn.title = 'Edit';
+      btn.setAttribute('aria-label', 'Edit draft');
+    }
+    function editingRowIn(){ return draftsEl.querySelector('.draft-row.editing'); }
 
     async function requestDrafts(){
       if(archived || draftsBusy) return;
-      draftsBusy = true;
-      showDraftsLoading();
+      var instruction = intentText();
+      setBusy(true);
+      setList(loadingHtml());
       try{
         var r = await fetch(withAs('/chat/' + spaceSlug + '/ai-draft'), {
           method:'POST', credentials:'same-origin',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({instruction: getBody()}),
+          body:JSON.stringify({instruction: instruction}),
         });
         var data = null;
         try{ data = await r.json(); }catch(e){}
         if(!draftsOpen) return;                       // dismissed while in flight
         if(r.ok && data && data.drafts && data.drafts.length){
-          renderDrafts(data.drafts);
+          lastDrafts = data.drafts;
+          setList(draftsHtml(lastDrafts));
         } else {
-          showDraftsError(data && data.message);
+          setList(errorHtml(data && data.message));
         }
       }catch(e){
-        if(draftsOpen) showDraftsError('Network error. Try again.');
-      }finally{ draftsBusy = false; }
+        if(draftsOpen) setList(errorHtml('Network error. Try again.'));
+      }finally{ setBusy(false); }
     }
 
     aiBtn.addEventListener('click', function(){
-      if(draftsOpen) closeDrafts(); else requestDrafts();
+      if(draftsOpen) closeDrafts(); else openDrafts();
+    });
+    // Keep focus where it is when the edit button is pressed, so committing on
+    // blur doesn't fight the click that asked to commit.
+    draftsEl.addEventListener('mousedown', function(e){
+      if(e.target.closest('.draft-edit')) e.preventDefault();
     });
     draftsEl.addEventListener('click', function(e){
       var act = e.target.closest('[data-act]');
@@ -1090,15 +1205,42 @@ CHAT_PAGE = """\
         if(act.dataset.act === 'close') closeDrafts(); else requestDrafts();
         return;
       }
-      var pick = e.target.closest('.draft');
-      if(!pick) return;
-      var text = lastDrafts[parseInt(pick.dataset.i, 10)];
+      var row = e.target.closest('.draft-row');
+      if(!row) return;
+      if(e.target.closest('.draft-edit')){
+        if(isEditing(row)) endDraftEdit(row); else beginDraftEdit(row);
+        return;
+      }
+      if(!e.target.closest('.draft') || isEditing(row)) return;  // caret, not a pick
+      var text = lastDrafts[parseInt(row.dataset.i, 10)];
       if(text == null) return;
       setComposerText(text);
       closeDrafts();
     });
+    draftsEl.addEventListener('dblclick', function(e){
+      var row = e.target.closest('.draft-row');
+      if(row && e.target.closest('.draft')) beginDraftEdit(row);
+    });
+    // The bubble is a div, so Enter-to-use is ours to wire. While editing,
+    // Enter belongs to the text — these messages are multi-paragraph.
+    draftsEl.addEventListener('keydown', function(e){
+      if(e.key !== 'Enter') return;
+      var row = e.target.closest && e.target.closest('.draft-row');
+      if(!row || isEditing(row) || !e.target.closest('.draft')) return;
+      e.preventDefault();
+      var text = lastDrafts[parseInt(row.dataset.i, 10)];
+      if(text == null) return;
+      setComposerText(text);
+      closeDrafts();
+    });
+    draftsEl.addEventListener('focusout', function(e){
+      var row = e.target.closest && e.target.closest('.draft-row');
+      if(row && isEditing(row)) endDraftEdit(row);
+    });
     document.addEventListener('keydown', function(e){
-      if(e.key === 'Escape' && draftsOpen) closeDrafts();
+      if(e.key !== 'Escape' || !draftsOpen) return;
+      var row = editingRowIn();
+      if(row) endDraftEdit(row); else closeDrafts();
     });
   }
 

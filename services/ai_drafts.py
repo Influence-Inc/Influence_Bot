@@ -4,12 +4,17 @@ AI-drafted replies for the admin side of the content-review chat.
 Jennifer (party ``admin``) sits in the middle of every creator <-> brand review
 chat: she keeps brand feedback specific, keeps the creator moving toward a
 resubmission, and unblocks whatever is stalling the review. `draft_replies`
-reads the recent transcript of one chat space and asks Claude for a few short,
+reads the recent transcript of one chat space and asks Claude for a few
 sendable options in that voice.
 
-Nothing is ever posted automatically. The admin UI drops the chosen draft into
-the composer, and it goes out through the normal `/chat/<slug>/messages`
-endpoint like anything the admin typed by hand.
+It works two ways. With no instruction it suggests replies off the
+conversation. With one — the admin types the point they want to get across in
+shorthand — it writes that point in her voice, and the transcript is only
+context.
+
+Nothing is ever posted automatically. The admin UI puts drafts in an editable
+sheet, the chosen one lands in the composer, and it goes out through the normal
+`/chat/<slug>/messages` endpoint like anything the admin typed by hand.
 
 Unset `ANTHROPIC_API_KEY` disables the feature: `is_configured()` is False, the
 composer renders without the draft button, and the endpoint answers 503.
@@ -19,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from config import Config
 from services import chat_service
@@ -39,6 +45,8 @@ _BODY_CHARS = 1000
 # Her feedback messages legitimately run several paragraphs; past this it's the
 # model rambling rather than a chat message.
 _DRAFT_CHARS = 2000
+# The admin's typed note. Long enough to paste a few sentences of intent.
+_INSTRUCTION_CHARS = 1500
 
 
 class DraftError(RuntimeError):
@@ -81,6 +89,8 @@ Not every line, but she is not shy about them.
 - Length follows the substance. An approval or a quick answer is a line or two. \
 Real feedback runs longer: a warm opening line, the notes as a numbered or "- " \
 list with one point each, then a closing line.
+- Break it up the way she does — a blank line between paragraphs, each list item \
+on its own line. Never run a whole message together as one block of text.
 - Every ask is softened and every "no" is made easy — "Could you please…", "One \
 optional tweak if you're up for it…", "if you prefer to post it as is, feel free \
 - totally your call!". Extra rounds get an apology: "So sorry to be sending \
@@ -121,7 +131,14 @@ _OUTPUT_SCHEMA = {
             "drafts": {
                 "type": "array",
                 "description": "Options for Jennifer's next chat message.",
-                "items": {"type": "string"},
+                "items": {
+                    "type": "string",
+                    "description": (
+                        "One complete message, ready to send. Multi-line: use "
+                        "real line breaks between paragraphs and between list "
+                        "items, with a blank line between paragraphs."
+                    ),
+                },
             },
         },
         "required": ["drafts"],
@@ -230,9 +247,18 @@ def _user_prompt(space, context: str, instruction: str, count: int) -> str:
             "the creator and the brand."
         )
     if instruction:
+        # The admin typed what they want to get across, in shorthand. That is
+        # the content of the message; the transcript above is only context and
+        # tone. Saying so keeps the model from drifting back to a generic
+        # transcript-driven reply and dropping half of what was asked for.
         parts.append(
-            "Jennifer's note on what she wants to say — follow it:\n"
-            + _clip(instruction, 500)
+            "What Jennifer wants this message to get across, in her own "
+            "shorthand:\n"
+            + _clip(instruction, _INSTRUCTION_CHARS)
+            + "\n\nWrite that, in her voice. Cover all of it, keep her ordering "
+            "where she gave one, and don't add asks she didn't make. Where the "
+            "note is terse or uses shorthand, expand it into how she would "
+            "actually say it."
         )
     parts.append(f"Write {count} options for Jennifer's next message.")
     return "\n\n".join(parts)
@@ -247,6 +273,14 @@ def _clean(text: str) -> str:
     # The model occasionally wraps a message in quotes as if reporting it.
     if len(text) > 1 and text[0] in '"“' and text[-1] in '"”':
         text = text[1:-1].strip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Some responses spell their line breaks out instead of writing them, which
+    # would otherwise reach the bubble as a visible "\n". Only translate when
+    # there are no real breaks to lose.
+    if "\n" not in text and "\\n" in text:
+        text = text.replace("\\n", "\n")
+    # One blank line is a paragraph break; more is slack.
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text[:_DRAFT_CHARS].strip()
 
 
@@ -284,10 +318,12 @@ def draft_replies(
 ) -> list[str]:
     """Return up to `count` sendable replies for the admin to choose from.
 
-    `instruction` is whatever the admin had typed in the composer when they hit
-    the draft button — a free-text steer ("ask for a tighter hook", "push the
-    Friday deadline"). Raises :class:`DraftError` on every failure path so the
-    route can turn it into one status code and one message.
+    `instruction` is what the admin typed into the draft sheet: the point they
+    want the message to get across, in shorthand ("hook at 0:03, and we can
+    wait for her AI credits, no rush"). When it's there it drives the content
+    and the transcript is only context and tone; when it's empty the drafts are
+    read off the conversation alone. Raises :class:`DraftError` on every
+    failure path so the route can turn it into one status code and one message.
     """
     if not is_configured():
         raise DraftError("not_configured", "AI drafting isn't configured on the server.")
