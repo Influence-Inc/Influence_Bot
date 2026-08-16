@@ -210,6 +210,43 @@ CHAT_PAGE = """\
     .notify-hint{max-width:820px;margin:0 auto;padding:2px 20px calc(10px + env(safe-area-inset-bottom));
       font-size:11px;color:var(--muted);text-align:center;letter-spacing:-.005em}
 
+    /* ── AI DRAFTS (admin only) ──
+       Suggested replies sit above the composer as received-style bubbles —
+       the same grey pill the other side's messages arrive in — so picking one
+       reads as lifting a message out of the thread rather than operating a
+       separate tool. Tapping a bubble fills the composer; nothing sends until
+       the admin presses send. */
+    .ai-btn{width:38px;height:38px;border-radius:99px;background:var(--recv-bg);color:var(--sent-bg);
+      display:flex;align-items:center;justify-content:center;flex-shrink:0;
+      transition:background .16s ease,color .16s ease}
+    .ai-btn.on{background:var(--sent-bg);color:#fff}
+    .ai-btn:disabled{opacity:.4;cursor:not-allowed}
+    .drafts{display:none;max-width:820px;margin:0 auto;width:100%;padding:10px 16px 0}
+    .drafts.on{display:block}
+    .drafts-head{display:flex;align-items:center;gap:10px;padding:0 4px 7px;
+      font-size:11px;color:var(--muted);letter-spacing:-.005em}
+    .drafts-head .sp{flex:1}
+    .drafts-head button{font-size:11px;color:#007AFF;padding:2px 2px;letter-spacing:-.005em}
+    .drafts-head button:disabled{color:var(--muted);cursor:not-allowed}
+    /* Real feedback messages run several paragraphs, so the sheet gets enough
+       room to show one in full and scrolls for the rest. */
+    .drafts-list{display:flex;flex-direction:column;align-items:flex-start;gap:6px;
+      max-height:46vh;overflow-y:auto}
+    /* Same measure as a message bubble, so a draft reads as the message it is
+       about to become rather than as a banner across the column. */
+    .draft{background:var(--recv-bg);color:var(--recv-fg);border-radius:20px;
+      padding:9px 16px;font-size:16px;line-height:1.3;letter-spacing:-.01em;text-align:left;
+      white-space:pre-wrap;word-wrap:break-word;overflow-wrap:anywhere;max-width:min(100%,480px);
+      transition:transform .14s cubic-bezier(.32,.72,0,1),background .14s ease}
+    .draft:active{transform:scale(.98);background:#DEDEE1}
+    .draft-note{font-size:11px;color:var(--muted);padding:2px 4px}
+    .draft-note.err{color:#991B1B}
+    .draft-load{display:inline-flex;align-items:center;gap:5px;background:var(--recv-bg);
+      border-radius:20px;padding:12px 16px}
+    .draft-load .dot{width:7px;height:7px;background:var(--muted);border-radius:99px;animation:bob 1.2s infinite}
+    .draft-load .dot:nth-child(2){animation-delay:.15s}
+    .draft-load .dot:nth-child(3){animation-delay:.3s}
+
     .emoji-pop{position:fixed;background:#fff;border:.5px solid var(--line);border-radius:14px;padding:6px;
       box-shadow:0 8px 28px rgba(0,0,0,.16);display:none;z-index:50;max-width:calc(100vw - 24px)}
     .emoji-pop button{font-size:22px;padding:5px;border-radius:8px;line-height:1}
@@ -235,11 +272,13 @@ CHAT_PAGE = """\
       .rcard{width:244px}
       .rcard-media{height:122px}
       .composer-row{padding:8px 10px 6px;gap:8px}
-      .attach-btn{width:34px;height:34px}
-      .attach-btn svg{width:18px;height:18px}
+      .attach-btn,.ai-btn{width:34px;height:34px}
+      .attach-btn svg,.ai-btn svg{width:18px;height:18px}
       .composer-input{padding:5px 5px 5px 14px;min-height:34px}
       .editable{font-size:15px}
       .send-btn{width:26px;height:26px}
+      .drafts{padding:8px 10px 0}
+      .draft{font-size:15px;padding:8px 14px}
       .banner{padding:9px 12px;font-size:12px}
     }
   </style>
@@ -287,11 +326,19 @@ CHAT_PAGE = """\
 
     <!-- COMPOSER -->
     <div class="composer">
+      {% if is_admin and ai_drafts_enabled %}
+      <div class="drafts" id="drafts" aria-live="polite"></div>
+      {% endif %}
       <div class="composer-row">
         <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
         <button type="button" class="attach-btn" id="fileBtn" title="Attach image" {% if space.status != 'active' %}disabled{% endif %}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><path d="M21 15l-5-5L5 21"></path></svg>
         </button>
+        {% if is_admin and ai_drafts_enabled %}
+        <button type="button" class="ai-btn" id="aiBtn" title="Draft with AI" aria-label="Draft with AI" {% if space.status != 'active' %}disabled{% endif %}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.6l1.5 4.4 4.4 1.5-4.4 1.5L12 14.4l-1.5-4.4L6.1 8.5l4.4-1.5L12 2.6z"></path><path d="M18.4 13.6l.85 2.45 2.45.85-2.45.85-.85 2.45-.85-2.45-2.45-.85 2.45-.85.85-2.45z"></path><path d="M6.2 14.2l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2z"></path></svg>
+        </button>
+        {% endif %}
         <div class="composer-input">
           <div class="composer-typing" id="composerTyping" aria-hidden="true"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
           <div class="editable" id="bodyInput" contenteditable="{{ 'false' if space.status != 'active' else 'true' }}"
@@ -301,7 +348,7 @@ CHAT_PAGE = """\
           </button>
         </div>
       </div>
-      <div class="notify-hint">{% if is_admin %}Posting as Influence — @{{ space.creator_username }} and {{ space.brand_name or 'the brand' }} will be notified · double-click a message to edit it silently{% elif self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
+      <div class="notify-hint">{% if is_admin %}Posting as Influence — @{{ space.creator_username }} and {{ space.brand_name or 'the brand' }} will be notified · double-click a message to edit it silently{% if ai_drafts_enabled %} · ✨ drafts a reply, type a note first to steer it{% endif %}{% elif self_party == 'brand' %}@{{ space.creator_username }} and Jennifer will be notified{% else %}{{ space.brand_name or 'The brand' }} and Jennifer will be notified{% endif %}</div>
     </div>
 
   </div>
@@ -332,6 +379,8 @@ CHAT_PAGE = """\
   var fileBtn = document.getElementById('fileBtn');
   var fileInput = document.getElementById('fileInput');
   var emojiPop = document.getElementById('emojiPop');
+  var aiBtn = document.getElementById('aiBtn');       // admin + AI configured only
+  var draftsEl = document.getElementById('drafts');
   var composerTyping = document.getElementById('composerTyping');
   var composerInput = document.querySelector('.composer-input');
   var lightbox = document.getElementById('lightbox');
@@ -939,6 +988,119 @@ CHAT_PAGE = """\
       fileInput.value = '';
     }
   });
+
+  // Write text into the composer, keeping its line breaks. The composer is a
+  // contenteditable div, so newlines have to become <br> — assigning them as
+  // plain text would let the browser collapse a two-line draft into one line.
+  function setComposerText(text){
+    var parts = String(text || '').split('\\n');
+    var html = '';
+    for(var i=0;i<parts.length;i++){ html += (i ? '<br>' : '') + escapeHtml(parts[i]); }
+    editable.innerHTML = html;
+    updateEmptyState();
+    editable.focus();
+    try{
+      var range = document.createRange(); range.selectNodeContents(editable); range.collapse(false);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }catch(e){}
+  }
+
+  // ── AI drafts (admin) ──────────────────────────────────────────────────
+  // The composer doubles as the steer: whatever is typed when the button is
+  // pressed is sent along as a note ("push the Friday deadline"), and picking
+  // a draft replaces it. Drafts are never sent for you — they land in the
+  // composer to edit and send by hand.
+  if(isAdmin && aiBtn && draftsEl){
+    var draftsOpen = false, draftsBusy = false, lastDrafts = [];
+
+    function closeDrafts(){
+      draftsOpen = false;
+      draftsEl.classList.remove('on');
+      draftsEl.innerHTML = '';
+      aiBtn.classList.remove('on');
+    }
+    // `count` says how many are in the sheet — a full feedback reply can be
+    // several paragraphs, so the ones below the fold need announcing.
+    function draftsHead(busy, count){
+      var label = count ? 'Suggested replies (' + count + ') — tap to use'
+                        : 'Suggested replies — tap to use';
+      return '<div class="drafts-head"><span>' + label + '</span>' +
+        '<span class="sp"></span>' +
+        '<button type="button" data-act="again"' + (busy ? ' disabled' : '') + '>Regenerate</button>' +
+        '<button type="button" data-act="close">Dismiss</button></div>';
+    }
+    function showDraftsLoading(){
+      draftsOpen = true;
+      aiBtn.classList.add('on');
+      draftsEl.classList.add('on');
+      draftsEl.innerHTML = draftsHead(true) +
+        '<div class="drafts-list"><div class="draft-load">' +
+        '<span class="dot"></span><span class="dot"></span><span class="dot"></span></div></div>';
+      // The sheet grows the sticky bar, so re-pin — otherwise the message
+      // being replied to slides out of view behind it.
+      pinToBottom();
+    }
+    function showDraftsError(message){
+      draftsEl.innerHTML = draftsHead(false) +
+        '<div class="drafts-list"><div class="draft-note err">' +
+        escapeHtml(message || 'Couldn\\'t draft a reply. Try again.') + '</div></div>';
+      pinToBottom();
+    }
+    function renderDrafts(list){
+      lastDrafts = list;
+      var html = draftsHead(false, list.length) + '<div class="drafts-list">';
+      for(var i=0;i<list.length;i++){
+        html += '<button type="button" class="draft" data-i="' + i + '">' +
+          escapeHtml(list[i]) + '</button>';
+      }
+      html += '</div>';
+      draftsEl.innerHTML = html;
+      pinToBottom();
+    }
+
+    async function requestDrafts(){
+      if(archived || draftsBusy) return;
+      draftsBusy = true;
+      showDraftsLoading();
+      try{
+        var r = await fetch(withAs('/chat/' + spaceSlug + '/ai-draft'), {
+          method:'POST', credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({instruction: getBody()}),
+        });
+        var data = null;
+        try{ data = await r.json(); }catch(e){}
+        if(!draftsOpen) return;                       // dismissed while in flight
+        if(r.ok && data && data.drafts && data.drafts.length){
+          renderDrafts(data.drafts);
+        } else {
+          showDraftsError(data && data.message);
+        }
+      }catch(e){
+        if(draftsOpen) showDraftsError('Network error. Try again.');
+      }finally{ draftsBusy = false; }
+    }
+
+    aiBtn.addEventListener('click', function(){
+      if(draftsOpen) closeDrafts(); else requestDrafts();
+    });
+    draftsEl.addEventListener('click', function(e){
+      var act = e.target.closest('[data-act]');
+      if(act){
+        if(act.dataset.act === 'close') closeDrafts(); else requestDrafts();
+        return;
+      }
+      var pick = e.target.closest('.draft');
+      if(!pick) return;
+      var text = lastDrafts[parseInt(pick.dataset.i, 10)];
+      if(text == null) return;
+      setComposerText(text);
+      closeDrafts();
+    });
+    document.addEventListener('keydown', function(e){
+      if(e.key === 'Escape' && draftsOpen) closeDrafts();
+    });
+  }
 
   // ── Reactions via emoji popover ──
   var emojiTargetMsg = null;
