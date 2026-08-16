@@ -233,8 +233,44 @@ def test_draft_replies_sends_transcript_and_returns_cleaned_drafts():
     assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
     prompt = call["messages"][0]["content"]
     assert "Maya (Reve, brand): Can we see a revised cut?" in prompt
-    assert "push for a date" in prompt
     assert "Creator: @virat" in prompt
+    # The typed note is the content of the message, not a footnote to it.
+    assert "What Jennifer wants this message to get across" in prompt
+    assert "push for a date" in prompt
+
+
+def test_line_breaks_survive_and_spelled_out_ones_are_repaired():
+    # The drafts are multi-paragraph messages, and the bubble renders them with
+    # `white-space: pre-wrap` — so the breaks have to come back intact.
+    space = _make_space()
+    stub = _StubAnthropic(_Response({"drafts": [
+        "Hi Najwa!\n\nTwo notes:\n1. one\n2. two\n\nThanks!",   # real breaks kept
+        "Hi Najwa!\\n\\nSpelled out instead of written.",        # literal \n repaired
+        "Too\n\n\n\nmuch air",                                   # runs collapsed
+        "Windows\r\nline\r\nendings",                            # normalised
+    ]}))
+    with _stub_sdk(stub):
+        drafts = ai_drafts.draft_replies(chat_space_id=space.id, count=4)
+    assert drafts[0] == "Hi Najwa!\n\nTwo notes:\n1. one\n2. two\n\nThanks!"
+    assert drafts[1] == "Hi Najwa!\n\nSpelled out instead of written."
+    assert drafts[2] == "Too\n\nmuch air"
+    assert drafts[3] == "Windows\nline\nendings"
+
+
+def test_drafts_without_an_instruction_still_read_off_the_transcript():
+    # The intent field is optional — an empty one means "suggest something".
+    space = _make_space()
+    chat_service.post_message(
+        chat_space_id=space.id, sender_party="brand",
+        sender_identifier="ops@reve.com", sender_display_name="Maya",
+        body="Any update?",
+    )
+    stub = _StubAnthropic(_Response({"drafts": ["Chasing it now!"]}))
+    with _stub_sdk(stub):
+        assert ai_drafts.draft_replies(chat_space_id=space.id, instruction="") == ["Chasing it now!"]
+    prompt = stub.calls[0]["messages"][0]["content"]
+    assert "Maya (Reve, brand): Any update?" in prompt
+    assert "What Jennifer wants this message to get across" not in prompt
 
 
 def test_draft_replies_without_api_key_is_not_configured():
@@ -446,17 +482,22 @@ def test_draft_button_is_admin_only_and_needs_the_feature_configured():
     assert 'id="aiBtn"' in admin
     assert 'id="drafts"' in admin
     assert "/ai-draft" in admin
-    assert "Suggested replies" in admin
+    assert "Draft with AI" in admin
+    assert 'id="intentInput"' in admin      # say what you want to get across
+    assert "draft-edit" in admin            # ...and edit each draft in place
 
-    # Creator/brand never see it, even when the server has a key.
+    # Creator/brand never see it, even when the server has a key. The sheet is
+    # built by JS into #drafts, and both that container and the button are
+    # Jinja-gated, so the shared script is inert on their page.
     creator = _render(space, is_admin=False, enabled=True)
     assert 'id="aiBtn"' not in creator
     assert 'id="drafts"' not in creator
+    assert "isAdmin && aiBtn && draftsEl" in creator
 
     # Nor does the admin when no key is configured.
     unconfigured = _render(space, is_admin=True, enabled=False)
     assert 'id="aiBtn"' not in unconfigured
-    assert "✨ drafts a reply" not in unconfigured
+    assert "to draft with AI" not in unconfigured
 
 
 def test_draft_button_disabled_on_a_closed_chat():
