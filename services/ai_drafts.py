@@ -221,6 +221,13 @@ def build_context(chat_space_id: int, *, limit: int | None = None) -> str:
             actor = (event.get("actor_name") or space.brand_name or "the brand").strip()
             lines.append(f"[Draft {number} {decided} by {actor}]")
             continue
+        if kind == "posts_submitted":
+            platforms = ", ".join(event.get("platforms") or []) or "their post"
+            lines.append(
+                f"[@{space.creator_username} shared their live post links "
+                f"({platforms}) — the video is up]"
+            )
+            continue
         parts = []
         if body:
             parts.append(body)

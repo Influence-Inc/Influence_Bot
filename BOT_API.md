@@ -126,7 +126,11 @@ Fired when a creator submits video links.
   },
   "creator": {
     "username": "tharun.fyi",
-    "email": "tharunr16@gmail.com"
+    "email": "tharunr16@gmail.com",
+    "submissionLinks": {
+      "submitForReviewUrl": "https://campaign.influence.technology/reve/reve-features/submit-for-review?username=tharun.fyi",
+      "submitPostsUrl": "https://campaign.influence.technology/reve/reve-features/submit-links?username=tharun.fyi"
+    }
   },
   "video": {
     "id": "abc123def456",
@@ -153,7 +157,11 @@ Fired when a creator submits a video for review.
   },
   "creator": {
     "username": "tharun.fyi",
-    "email": "tharunr16@gmail.com"
+    "email": "tharunr16@gmail.com",
+    "submissionLinks": {
+      "submitForReviewUrl": "https://campaign.influence.technology/reve/reve-features/submit-for-review?username=tharun.fyi",
+      "submitPostsUrl": "https://campaign.influence.technology/reve/reve-features/submit-links?username=tharun.fyi"
+    }
   },
   "review": {
     "videoLink": "https://drive.google.com/file/abc123",

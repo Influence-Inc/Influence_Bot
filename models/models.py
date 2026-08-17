@@ -47,6 +47,28 @@ def init_db():
     _migrate_review_submissions_submit_posts_url()
     _migrate_review_submissions_ignored()
     _migrate_chat_messages_events()
+    _migrate_chat_spaces_submission_links()
+
+
+def _migrate_chat_spaces_submission_links():
+    """
+    Add the creator's two submission-page URLs to `chat_spaces` on
+    pre-column deploys. Idempotent.
+
+    They live on the space rather than on each review because they're per
+    (creator, campaign) — the same grain as the campaign-long space — so a
+    resubmission doesn't need to re-resolve them.
+    """
+    inspector = inspect(engine)
+    if "chat_spaces" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("chat_spaces")}
+    with engine.begin() as conn:
+        for column in ("submit_for_review_url", "submit_posts_url"):
+            if column not in cols:
+                conn.execute(text(
+                    f"ALTER TABLE chat_spaces ADD COLUMN {column} TEXT"
+                ))
 
 
 def _migrate_chat_messages_events():
@@ -537,6 +559,14 @@ class ChatSpace(Base):
 
     # Latest associated review (updated each time the creator resubmits).
     latest_review_id = Column(Integer, ForeignKey("review_submissions.id"), nullable=True)
+
+    # The creator's two personal submission pages on the campaigns site, as
+    # minted by `creatorSubmissionLinks()` there. Per (creator, campaign), so
+    # they belong to the campaign-long space rather than to one review.
+    # Nullable: a space opened before the webhook carried them resolves them
+    # lazily (see services/submission_links.py).
+    submit_for_review_url = Column(Text, nullable=True)
+    submit_posts_url = Column(Text, nullable=True)
 
     # active | approved (legacy, pre-campaign-long spaces) | archived
     status = Column(String(20), nullable=False, default="active")

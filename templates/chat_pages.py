@@ -138,14 +138,68 @@ CHAT_PAGE = """\
     .rcard-sub{font-size:12.5px;line-height:1.3;margin-top:2px;color:var(--muted);letter-spacing:-.005em}
     .rcard-wrap.sent .rcard-sub{color:rgba(255,255,255,.60)}
 
-    /* ── SYSTEM NOTICE ── centred, unobtrusive: "Draft 2 approved". */
-    .row.sys-row{align-self:center;max-width:88%;margin-top:16px}
+    /* ── SYSTEM NOTICE ── centred, unobtrusive: "Draft 2 approved".
+       Column, because a notice that opened a next step stacks the action
+       underneath itself rather than beside it. */
+    .row.sys-row{align-self:center;max-width:88%;margin-top:16px;flex-direction:column}
     .sys{display:flex;align-items:center;justify-content:center;gap:5px;font-size:11.5px;
       color:var(--muted);letter-spacing:-.005em;text-align:center}
     .sys .sys-dot{display:inline-flex;align-items:center;justify-content:center;
       width:15px;height:15px;border-radius:99px;color:#fff;flex-shrink:0}
     .sys.ok .sys-dot{background:#34C759}
     .sys.chg .sys-dot{background:#FF9F0A}
+    .sys.post .sys-dot{background:#0A84FF}
+
+    /* ── NEXT STEP ──
+       At most one of these exists at a time, anywhere on the page: whatever
+       it is the creator's turn to do. It appears twice, from one source —
+       inline under the system notice that opened it, so the history reads
+       in order, and as a strip above the composer so it's reachable from
+       anywhere in a long scroll. */
+    .sys-act{display:flex;justify-content:center;margin-top:7px}
+    .sys-act a{display:inline-flex;align-items:center;gap:6px;padding:7px 15px;border-radius:99px;
+      background:var(--sent-bg);color:#fff;font-size:12.5px;font-weight:600;letter-spacing:-.01em;
+      text-decoration:none;transition:transform .14s cubic-bezier(.32,.72,0,1),opacity .14s ease}
+    .sys-act a:active{transform:scale(.97)}
+    .sys-act a .chev{opacity:.65;flex-shrink:0}
+    /* The admin sees what the creator is being shown, but it isn't theirs
+       to click, so it reads as a label rather than an affordance. */
+    .sys-act.mirror span{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:99px;
+      background:var(--recv-bg);color:#3C3C43;font-size:11.5px;font-weight:500;letter-spacing:-.005em}
+
+    /* The strip. Sits inside the sticky composer so it scrolls with nothing
+       and never covers the last message. */
+    .nextstep{max-width:820px;margin:0 auto;width:100%;padding:9px 16px 3px;
+      display:flex;align-items:center;gap:11px}
+    .nextstep.hidden{display:none}
+    .nextstep-main{flex:1;display:flex;align-items:center;gap:11px;padding:10px 14px;border-radius:14px;
+      background:var(--sent-bg);color:#fff;text-decoration:none;min-width:0;
+      transition:transform .14s cubic-bezier(.32,.72,0,1)}
+    .nextstep-main:active{transform:scale(.99)}
+    .nextstep-icon{width:28px;height:28px;border-radius:99px;background:rgba(255,255,255,.16);
+      display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .nextstep-text{min-width:0;flex:1}
+    .nextstep-label{display:block;font-size:14px;font-weight:600;letter-spacing:-.015em;line-height:1.25;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .nextstep-detail{display:block;font-size:11.5px;line-height:1.3;margin-top:1px;color:rgba(255,255,255,.62);
+      letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .nextstep-go{opacity:.7;flex-shrink:0}
+    /* Dismiss is deliberately outside the tap target: reading the strip and
+       getting rid of it are different intents, and it comes back on reload
+       because the step is still open. */
+    .nextstep-x{width:28px;height:28px;border-radius:99px;color:var(--muted);flex-shrink:0;
+      display:flex;align-items:center;justify-content:center}
+    .nextstep-x:hover{background:var(--recv-bg);color:#3C3C43}
+    /* Once a review is approved (or the campaign has ended) nobody can type,
+       and a disabled input is just a dead end at the exact moment the
+       creator still has something to do. Drop it and let the strip be the
+       bar; with no step left either, the bar itself has no reason to exist.
+       The markup stays put — only its visibility changes — so none of the
+       composer's wiring has to care about the state it's in. */
+    .composer.no-input .composer-row,
+    .composer.no-input .notify-hint{display:none}
+    .composer.no-input:not(.has-step){display:none}
+    .composer.no-input .nextstep{padding:11px 16px calc(11px + env(safe-area-inset-bottom))}
 
     /* hover react affordance */
     .react-btn{position:absolute;top:50%;transform:translateY(-50%) scale(.9);opacity:0;pointer-events:none;
@@ -303,6 +357,9 @@ CHAT_PAGE = """\
       .drafts{padding:8px 10px 0}
       .draft{font-size:15px;padding:8px 14px}
       .banner{padding:9px 12px;font-size:12px}
+      .nextstep{padding:8px 10px 3px;gap:8px}
+      .nextstep-main{padding:9px 12px;gap:9px}
+      .nextstep-label{font-size:13.5px}
     }
   </style>
 </head>
@@ -324,7 +381,7 @@ CHAT_PAGE = """\
           <div class="av lg av-admin">JP</div>
         </div>
         <div class="header-title">{{ space.brand_name or space.campaign_name or 'Chat' }} &times; @{{ space.creator_username }}</div>
-        <div class="header-sub">3 people &middot; {{ space.campaign_name or space.brand_name or 'Campaign' }}</div>
+        <div class="header-sub" id="headerSub">3 people &middot; {{ space.campaign_name or space.brand_name or 'Campaign' }}</div>
       </div>
     </div>
 
@@ -348,10 +405,15 @@ CHAT_PAGE = """\
     </div>
 
     <!-- COMPOSER -->
-    <div class="composer">
+    <!-- An approved review closes the composer for the creator and the brand.
+         The next step outlives that: posting the live links is the whole
+         point of the approval, so the strip becomes the bar's only content
+         rather than the chat dead-ending on a disabled input. -->
+    <div class="composer{% if space.status != 'active' %} no-input{% endif %}">
       {% if is_admin and ai_drafts_enabled %}
       <div class="drafts" id="drafts" aria-live="polite"></div>
       {% endif %}
+      <div class="nextstep hidden" id="nextStep" aria-live="polite"></div>
       <div class="composer-row">
         <input type="file" id="fileInput" accept="image/png,image/jpeg,image/gif,image/webp" style="display:none">
         <button type="button" class="attach-btn" id="fileBtn" title="Attach image" {% if space.status != 'active' %}disabled{% endif %}>
@@ -386,6 +448,10 @@ CHAT_PAGE = """\
   </div>
 
 <script id="initial-read-state" type="application/json">{{ initial_read_state | tojson }}</script>
+<!-- `default(none)` so a caller that renders this page without resolving a
+     step (tests, any future embed) gets "no step" rather than a hard failure
+     on an undefined variable. -->
+<script id="initial-next-step" type="application/json">{{ next_step | default(none) | tojson }}</script>
 <script>
 (function(){
   var bodyEl = document.body;
@@ -433,6 +499,9 @@ CHAT_PAGE = """\
   var PLAY = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><path d="M9 6.6 L18.6 12 L9 17.4 Z"></path></svg>';
   var TICK = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   var PENCIL = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"></path></svg>';
+  var LINKICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"></path></svg>';
+  var CHEV = '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+  var UPLOAD = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>';
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, function(c){
@@ -609,8 +678,132 @@ CHAT_PAGE = """\
     }
   }
 
+  // ── Next step ─────────────────────────────────────────────────────────
+  // Whatever it is the creator's turn to do, resolved server-side from the
+  // state of the campaign's drafts. At most one exists at a time, so there
+  // is never a menu of destinations to choose between — see
+  // services/creator_next_step.py.
+  var nextStep = null;
+  try{
+    nextStep = JSON.parse(document.getElementById('initial-next-step').textContent || 'null');
+  }catch(e){ nextStep = null; }
+  var nextStepEl = document.getElementById('nextStep');
+  var composerEl = document.querySelector('.composer');
+  var headerSub = document.getElementById('headerSub');
+  var headerSubDefault = headerSub ? headerSub.textContent : '';
+  // Only the creator can act on a step. The admin gets a read-only mirror so
+  // the team can see what the creator is looking at; the brand gets nothing,
+  // since it's never their move.
+  var canAct = selfParty === 'creator';
+  var showsStep = canAct || isAdmin;
+
+  function stepUrl(step){
+    return '/chat/' + spaceSlug + '/go/' + encodeURIComponent(step.route);
+  }
+  // The strip is a nudge, not a blocker: someone who's read it and wants to
+  // get on with the conversation can put it away. Deliberately held in
+  // memory only, so opening the chat again shows it — the step is still
+  // open, and nothing about dismissing it made that less true. The action
+  // itself is never lost either way: it stays in the feed under the notice
+  // that opened it.
+  var dismissed = null;
+  function stepId(step){
+    return step.key + ':' + (step.review_id || 0);
+  }
+  function isDismissed(step){
+    return dismissed === stepId(step);
+  }
+  function dismiss(step){
+    dismissed = stepId(step);
+  }
+
+  function renderNextStep(){
+    if(!nextStepEl) return;
+    var step = nextStep;
+    var show = !!step && showsStep && !(canAct && isDismissed(step));
+    if(composerEl) composerEl.classList.toggle('has-step', show);
+    if(!show){
+      nextStepEl.classList.add('hidden');
+      nextStepEl.innerHTML = '';
+      if(headerSub) headerSub.textContent = headerSubDefault;
+      return;
+    }
+    // The header sub-line becomes live status rather than a second control:
+    // it says where things stand, and tapping it scrolls to the action.
+    if(headerSub) headerSub.textContent = canAct ? step.detail : ('Creator: ' + step.label);
+    if(canAct){
+      nextStepEl.innerHTML =
+        '<a class="nextstep-main" href="' + escapeHtml(stepUrl(step)) + '">' +
+          '<span class="nextstep-icon">' + (step.key === 'submit_posts' ? LINKICON : UPLOAD) + '</span>' +
+          '<span class="nextstep-text">' +
+            '<span class="nextstep-label">' + escapeHtml(step.label) + '</span>' +
+            '<span class="nextstep-detail">' + escapeHtml(step.detail) + '</span>' +
+          '</span>' +
+          '<span class="nextstep-go">' + CHEV + '</span>' +
+        '</a>' +
+        '<button type="button" class="nextstep-x" id="nextStepX" title="Hide" aria-label="Hide">' +
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>' +
+        '</button>';
+      var x = document.getElementById('nextStepX');
+      if(x) x.addEventListener('click', function(){ dismiss(step); renderNextStep(); });
+    }else{
+      nextStepEl.innerHTML =
+        '<div class="nextstep-main" style="background:var(--recv-bg);color:#3C3C43">' +
+          '<span class="nextstep-icon" style="background:rgba(0,0,0,.06)">' +
+            (step.key === 'submit_posts' ? LINKICON : UPLOAD) + '</span>' +
+          '<span class="nextstep-text">' +
+            '<span class="nextstep-label">Waiting on @' + escapeHtml(creatorUsername) + '</span>' +
+            '<span class="nextstep-detail" style="color:var(--muted)">' + escapeHtml(step.label) + '</span>' +
+          '</span>' +
+        '</div>';
+    }
+    nextStepEl.classList.remove('hidden');
+  }
+
+  // Replace the step and re-render everything that shows it. The inline
+  // action under a decision is anchored to a specific draft, so a step that
+  // has moved on takes its action row with it.
+  function setNextStep(step){
+    var before = nextStep ? (nextStep.key + ':' + nextStep.review_id) : '';
+    var after = step ? (step.key + ':' + step.review_id) : '';
+    nextStep = step || null;
+    renderNextStep();
+    if(before !== after) refreshInlineActions();
+  }
+
+  // The action row that hangs under the system notice which opened the step.
+  // It only renders on the event for the draft the step actually answers, so
+  // the same action never repeats down a long history.
+  function inlineActionHtml(m){
+    if(!nextStep || !showsStep) return '';
+    var ev = m.event || {};
+    if(!nextStep.review_id || ev.review_id !== nextStep.review_id) return '';
+    if(!canAct){
+      return '<div class="sys-act mirror"><span>' + escapeHtml(nextStep.label) + '</span></div>';
+    }
+    return '<div class="sys-act"><a href="' + escapeHtml(stepUrl(nextStep)) + '">' +
+      escapeHtml(nextStep.label) + CHEV + '</a></div>';
+  }
+
+  function refreshInlineActions(){
+    var rows = messagesEl.querySelectorAll('.row.sys-row[data-kind="review_decision"]');
+    for(var i=0;i<rows.length;i++){
+      var row = rows[i];
+      var existing = row.querySelector('.sys-act');
+      if(existing) existing.remove();
+      var reviewId = parseInt(row.getAttribute('data-review'), 10);
+      if(nextStep && showsStep && nextStep.review_id && reviewId === nextStep.review_id){
+        row.insertAdjacentHTML('beforeend', inlineActionHtml({ event: { review_id: reviewId } }));
+        var x = row.querySelector('.sys-act a');
+        if(x) x.setAttribute('href', stepUrl(nextStep));
+      }
+    }
+  }
+
   // `review_decision` — a centred system line, the way iMessage announces
-  // something that happened to the conversation rather than in it.
+  // something that happened to the conversation rather than in it. When the
+  // decision opened the creator's current step, it carries that step: an
+  // approval that says "post it" is not the end of the story.
   function decisionHtml(m){
     var ev = m.event || {};
     var approved = ev.decision === 'approved';
@@ -618,6 +811,20 @@ CHAT_PAGE = """\
       (approved ? ' approved' : ' — changes requested');
     return '<div class="sys ' + (approved ? 'ok' : 'chg') + '">' +
       '<span class="sys-dot">' + (approved ? TICK : PENCIL) + '</span>' +
+      '<span>' + escapeHtml(text) + '</span></div>' +
+      inlineActionHtml(m);
+  }
+
+  // `posts_submitted` — the creator shared their live links. The other half
+  // of an approval, and what retires the "add your post links" step.
+  function postsSubmittedHtml(m){
+    var ev = m.event || {};
+    var plats = (ev.platforms || []).map(function(p){
+      return p.charAt(0).toUpperCase() + p.slice(1);
+    });
+    var text = 'Live post links added' + (plats.length ? ' · ' + plats.join(' · ') : '');
+    return '<div class="sys post">' +
+      '<span class="sys-dot">' + LINKICON + '</span>' +
       '<span>' + escapeHtml(text) + '</span></div>';
   }
 
@@ -784,9 +991,13 @@ CHAT_PAGE = """\
     row.dataset.body = m.body || '';  // raw text, so an admin edit can prefill it
 
     // System notices sit centred on their own, belonging to neither side.
-    if(m.kind === 'review_decision'){
+    if(m.kind === 'review_decision' || m.kind === 'posts_submitted'){
       row.className = 'row sys-row';
-      row.innerHTML = decisionHtml(m);
+      row.dataset.kind = m.kind;
+      // Lets refreshInlineActions() find the decision a step belongs to
+      // without re-reading the whole feed.
+      if((m.event || {}).review_id) row.dataset.review = (m.event || {}).review_id;
+      row.innerHTML = m.kind === 'review_decision' ? decisionHtml(m) : postsSubmittedHtml(m);
       messagesEl.appendChild(row);
       prevAppend = {party:'system', sender:'', mine:false, day:dk};
       if(m.id > lastId) lastId = m.id;
@@ -884,6 +1095,10 @@ CHAT_PAGE = """\
         if(stick) scrollToBottom();
         sendRead();
       }
+      // An approval, or the creator's own post links landing, changes what
+      // it's their turn to do. The server sends the current step alongside
+      // any new messages so the strip follows without a reload.
+      if(Object.prototype.hasOwnProperty.call(data, 'next_step')) setNextStep(data.next_step);
     }catch(e){}
   }
 
@@ -924,6 +1139,10 @@ CHAT_PAGE = """\
         clearTypingFor(m.party);
         if(stick) scrollToBottom();
         sendRead();
+        // A decision or a posts notice may have just changed whose move it
+        // is. Poll for the step rather than guessing at it here — the
+        // request comes back empty-handed on messages and cheap.
+        if(m.kind === 'review_decision' || m.kind === 'posts_submitted') backfill();
       }catch(e){}
     });
     sse.addEventListener('reaction', function(ev){
@@ -1345,6 +1564,18 @@ CHAT_PAGE = """\
     if(e.key === 'Escape' && lightbox.classList.contains('on')) closeLightbox();
   });
 
+  // Tapping the live header status scrolls to the action rather than being a
+  // second way to trigger it — the header stays status, never a control.
+  if(headerSub){
+    headerSub.addEventListener('click', function(){
+      if(!nextStep || !showsStep) return;
+      var anchor = nextStepEl && !nextStepEl.classList.contains('hidden')
+        ? nextStepEl : messagesEl.querySelector('.sys-act');
+      if(anchor) anchor.scrollIntoView({behavior:'smooth', block:'center'});
+    });
+  }
+
+  renderNextStep();
   updateEmptyState();
   backfill().then(function(){
     initialLoaded = true;

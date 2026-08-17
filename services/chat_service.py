@@ -53,6 +53,10 @@ logger = logging.getLogger(__name__)
 KIND_TEXT = "text"
 KIND_REVIEW_SUBMISSION = "review_submission"
 KIND_REVIEW_DECISION = "review_decision"
+# The creator shared the live post link(s) after an approval. Closes the
+# loop the approval opened — see services/creator_next_step.py, which reads
+# these rows to decide whether the post-links step is still outstanding.
+KIND_POSTS_SUBMITTED = "posts_submitted"
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +850,68 @@ def post_review_decision_event(
     )
 
 
+def post_posts_submitted_event(
+    *,
+    chat_space_id: int,
+    platforms: Optional[list[str]] = None,
+    video_title: Optional[str] = None,
+    video_id: Optional[str] = None,
+) -> Optional[ChatMessage]:
+    """
+    Record that the creator shared their live post link(s), as a system
+    notice alongside the approval it answers.
+
+    This is the other half of an approval: the brand said yes, the creator
+    posted, and the conversation shows both. It's also the signal that
+    retires the "add your live post links" step — see
+    services/creator_next_step.py.
+
+    Idempotent per video: the campaigns site fires the webhook on every
+    save and retries, so the same post must not stack notices.
+    """
+    space = find_by_id(chat_space_id)
+    if space is None:
+        return None
+
+    platforms = [p for p in (platforms or []) if p]
+    db = SessionLocal()
+    try:
+        if video_id:
+            recent = (
+                db.query(ChatMessage)
+                .filter(
+                    ChatMessage.chat_space_id == space.id,
+                    ChatMessage.kind == KIND_POSTS_SUBMITTED,
+                )
+                .order_by(ChatMessage.id.desc())
+                .limit(20)
+                .all()
+            )
+            for row in recent:
+                prior = _decode_event(row.event_json) or {}
+                if prior.get("video_id") == video_id:
+                    return None
+    finally:
+        db.close()
+
+    event = {
+        "platforms": platforms,
+        "video_title": video_title or "",
+        "video_id": video_id or "",
+    }
+    label = " · ".join(p.title() for p in platforms) if platforms else ""
+    body = "Live post links added" + (f" ({label})" if label else "")
+    return post_message(
+        chat_space_id=space.id,
+        sender_party="system",
+        sender_identifier="system",
+        sender_display_name="INFLUENCE",
+        body=body,
+        kind=KIND_POSTS_SUBMITTED,
+        event=event,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Attachments
 # ---------------------------------------------------------------------------
@@ -1181,6 +1247,10 @@ def transcript_to_markdown(transcript: dict) -> str:
             actor = event.get("actor_name") or ""
             suffix = f" by {actor}" if actor else ""
             lines.append(f"**{(m.get('body') or 'Decision').strip()}**{suffix} · {when}")
+            lines.append("")
+            continue
+        if kind == KIND_POSTS_SUBMITTED:
+            lines.append(f"**{(m.get('body') or 'Live post links added').strip()}** · {when}")
             lines.append("")
             continue
         lines.append(f"**{sender}** · _{m.get('party')}_ · {when}")
