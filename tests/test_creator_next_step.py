@@ -31,9 +31,43 @@ from models.models import (  # noqa: E402
     SessionLocal,
     init_db,
 )
+import pytest  # noqa: E402
+
 from services import chat_service, creator_next_step, submission_links  # noqa: E402
 
 init_db()
+
+
+# Captured before any test can stub it over.
+_real_fetch_creator = submission_links.fetch_creator
+
+
+@pytest.fixture(autouse=True)
+def _offline_campaigns_api(monkeypatch):
+    """
+    No test reaches the real campaigns API. The default is "we couldn't
+    find out", which drops the resolver onto its local floor; tests that
+    care about the authoritative count set it with `_api_reports_posted`.
+    """
+    monkeypatch.setattr(submission_links, "fetch_creator", lambda *a, **kw: None)
+
+
+def _api_reports_posted(monkeypatch, count):
+    """The campaigns site reports `count` videos with links logged."""
+    monkeypatch.setattr(
+        submission_links,
+        "fetch_creator",
+        lambda *a, **kw: {"deliverables": {"actualVideos": count}},
+    )
+    _time_passes()
+
+
+def _time_passes():
+    """
+    Clear the per-space recheck throttle, standing in for the minutes that
+    would have elapsed between two visits to the chat.
+    """
+    creator_next_step._last_checked.clear()
 
 CAMPAIGN_SLUG = "reve/reve-features"
 REVIEW_URL = "https://campaigns.example.com/reve/reve-features/submit-for-review?username=riu"
@@ -50,6 +84,7 @@ def _reset():
     finally:
         db.close()
     submission_links._misses.clear()
+    creator_next_step._last_checked.clear()
 
 
 def _submit_review(*, username="riu.drafts", decision=None, ignored=False) -> int:
@@ -183,6 +218,109 @@ def test_a_later_approval_reopens_the_post_links_step():
     assert step.review_id == second
 
 
+def test_links_logged_before_this_shipped_still_retire_the_step(monkeypatch):
+    """
+    The bug this counting replaced. A creator who logged their post links
+    before `posts_submitted` notices existed has no notice in the chat, so
+    inferring from the feed asked them for links they had already given —
+    and no notice was ever going to arrive to stop it. The campaigns site
+    knew all along; now we ask it.
+    """
+    _reset()
+    review_id = _submit_review()
+    space = _space_for(review_id)
+    _decide(review_id, "approved")
+    # No posts_submitted event exists, exactly as for a pre-deploy space.
+    assert _resolve(space).key == creator_next_step.KEY_SUBMIT_POSTS
+
+    _api_reports_posted(monkeypatch, 1)
+    assert _resolve(space) is None
+
+
+def test_a_later_changes_request_does_not_reopen_a_posted_draft():
+    """
+    The other way the id comparison failed: it asked "is the newest posts
+    notice newer than the newest decision?", which any later decision
+    falsified — including a changes-requested on a different draft, which
+    says nothing about draft 1's links.
+    """
+    _reset()
+    first = _submit_review()
+    space = _space_for(first)
+    _decide(first, "approved")
+    chat_service.post_posts_submitted_event(
+        chat_space_id=space.id, platforms=["instagram"], video_id="v1"
+    )
+    assert _resolve(space) is None
+
+    second = _submit_review()
+    chat_service.get_or_create_for_review(second)
+    _decide(second, "changes_requested")
+    assert _resolve(space).key == creator_next_step.KEY_RESUBMIT_DRAFT
+
+    third = _submit_review()
+    chat_service.get_or_create_for_review(third)
+    # Draft 1 was posted long ago; nothing here is the creator's move.
+    assert _resolve(space) is None
+
+
+def test_the_count_is_per_approval_not_a_single_flag(monkeypatch):
+    """Two approvals with one video posted still owes one set of links."""
+    _reset()
+    first = _submit_review()
+    space = _space_for(first)
+    _decide(first, "approved")
+    second = _submit_review()
+    chat_service.get_or_create_for_review(second)
+    _decide(second, "approved")
+
+    _api_reports_posted(monkeypatch, 1)
+    step = _resolve(space)
+    assert step is not None
+    assert step.key == creator_next_step.KEY_SUBMIT_POSTS
+    # Anchored to the approval still outstanding, not the one already posted.
+    assert step.review_id == second
+
+    _api_reports_posted(monkeypatch, 2)
+    assert _resolve(space) is None
+
+
+def test_an_unreachable_api_falls_back_to_our_own_notices():
+    """
+    Not knowing must not invent an answer. With the API unreachable the
+    resolver uses the notices it has, which is a floor: it can undercount
+    history, never overcount it.
+    """
+    _reset()
+    review_id = _submit_review()
+    space = _space_for(review_id)
+    _decide(review_id, "approved")
+    assert _resolve(space).key == creator_next_step.KEY_SUBMIT_POSTS
+
+    chat_service.post_posts_submitted_event(
+        chat_space_id=space.id, platforms=["instagram"], video_id="v1"
+    )
+    assert _resolve(space) is None
+
+
+def test_a_failed_lookup_is_never_cached_as_zero(monkeypatch):
+    """
+    Caching "we couldn't find out" as 0 would claim the creator has posted
+    nothing, and stick.
+    """
+    _reset()
+    review_id = _submit_review()
+    space = _space_for(review_id)
+    _decide(review_id, "approved")
+    assert _resolve(space).key == creator_next_step.KEY_SUBMIT_POSTS
+    assert chat_service.find_by_id(space.id).posts_logged is None
+
+    _api_reports_posted(monkeypatch, 1)
+    assert _resolve(space) is None
+    # Now that we know, it's cached and the next read is free.
+    assert chat_service.find_by_id(space.id).posts_logged == 1
+
+
 def test_only_ignored_drafts_means_nothing_is_in_play():
     _reset()
     review_id = _submit_review(ignored=True)
@@ -312,6 +450,9 @@ def test_a_repeated_lookup_failure_is_not_retried_every_time(monkeypatch):
     monkeypatch.setattr(
         "services.reelstats_api.ReelStatsAPI.get_campaigns", _fake_campaigns
     )
+    # Undo the offline default: the miss cache lives below fetch_creator,
+    # so this test needs the real one.
+    monkeypatch.setattr(submission_links, "fetch_creator", _real_fetch_creator)
     for _ in range(3):
         assert not submission_links.fetch_from_api(CAMPAIGN_SLUG, "riu.drafts")
     assert len(calls) == 1

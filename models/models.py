@@ -48,6 +48,21 @@ def init_db():
     _migrate_review_submissions_ignored()
     _migrate_chat_messages_events()
     _migrate_chat_spaces_submission_links()
+    _migrate_chat_spaces_posts_logged()
+
+
+def _migrate_chat_spaces_posts_logged():
+    """Add `posts_logged` to `chat_spaces` on pre-column deploys. Idempotent."""
+    inspector = inspect(engine)
+    if "chat_spaces" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("chat_spaces")}
+    if "posts_logged" in cols:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE chat_spaces ADD COLUMN posts_logged INTEGER"
+        ))
 
 
 def _migrate_chat_spaces_submission_links():
@@ -567,6 +582,14 @@ class ChatSpace(Base):
     # lazily (see services/submission_links.py).
     submit_for_review_url = Column(Text, nullable=True)
     submit_posts_url = Column(Text, nullable=True)
+
+    # How many of this creator's videos on this campaign have their live post
+    # links logged. The campaigns site owns this fact — it is
+    # `videos.filter(v => v.hasLinks).length`, served as
+    # `deliverables.actualVideos` — and we cache the number here so the chat
+    # page can read it without an outbound call on its render path. NULL
+    # means "never asked"; see services/creator_next_step.py.
+    posts_logged = Column(Integer, nullable=True)
 
     # active | approved (legacy, pre-campaign-long spaces) | archived
     status = Column(String(20), nullable=False, default="active")

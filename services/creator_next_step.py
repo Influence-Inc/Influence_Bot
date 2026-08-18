@@ -27,24 +27,28 @@ Whatever the brand is waiting on wins; the other state is mentioned in
 the detail line, never as a second button. That rule is what stops this
 becoming a permanent toolbar.
 
-Evidence is local — our own `review_submissions` rows plus the event
-messages in the chat — so resolving a next step never blocks on an
-outbound call. Two consequences worth knowing:
+Which drafts exist and what the brand decided is ours to know, and read
+locally. Whether the creator has already posted is not: the campaigns
+site owns that, as `deliverables.actualVideos`. We ask it, and cache the
+number on the space, so the render path stays local without inventing an
+answer.
 
-- Whether the creator has shared their live post links is read from the
-  ``posts_submitted`` event the `video_links_submitted` webhook writes
-  into the chat. Those only exist from this feature's first deploy
-  onward, so a draft approved before it shows the step until the creator
-  submits (which records the event and clears it) or the campaign ends
-  and the space is archived. Self-healing, and the page they land on
-  shows the slots they already filled.
-- A URL we can't resolve means no step at all, rather than a button that
-  goes nowhere — the same rule the approval email follows.
+An earlier version inferred posting from our own `posts_submitted`
+notices instead. Those only exist from this feature's first deploy
+onward, so a creator who had logged their links before it shipped was
+asked for them again, indefinitely — the notice that would have retired
+the step was never going to arrive. Counting a fact we don't own was the
+mistake; the notices are still written, but they're a floor for when the
+API can't be reached, not the ledger.
+
+A URL we can't resolve means no step at all, rather than a button that
+goes nowhere — the same rule the approval email follows.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -121,10 +125,10 @@ def _drafts_for_space(db, space: ChatSpace) -> list[ReviewSubmission]:
     return [r for r in rows if not r.ignored]
 
 
-def _latest_event_id(db, *, chat_space_id: int, kind: str) -> int:
-    """Id of the newest event of this kind in the space, or 0."""
+def _event_count(db, *, chat_space_id: int, kind: str) -> int:
+    """How many events of this kind the space holds."""
     row = (
-        db.query(func.max(ChatMessage.id))
+        db.query(func.count(ChatMessage.id))
         .filter(
             ChatMessage.chat_space_id == chat_space_id,
             ChatMessage.kind == kind,
@@ -134,32 +138,86 @@ def _latest_event_id(db, *, chat_space_id: int, kind: str) -> int:
     return int(row or 0)
 
 
+# How long to leave the campaigns site alone between checks on one space.
+# Only consulted when we are otherwise about to ask a creator for links,
+# so this throttles a rare call rather than a common one.
+_RECHECK_SECONDS = 300.0
+_last_checked: dict[int, float] = {}
+
+
+def _due_a_recheck(chat_space_id: int) -> bool:
+    last = _last_checked.get(chat_space_id)
+    if last is not None and time.monotonic() - last < _RECHECK_SECONDS:
+        return False
+    _last_checked[chat_space_id] = time.monotonic()
+    return True
+
+
+def _posts_logged(db, space: ChatSpace, *, needed: int) -> int:
+    """
+    How many of this creator's videos on this campaign already have their
+    live post links logged — enough of an answer to decide whether to ask
+    for `needed` of them.
+
+    The campaigns site owns this fact (`deliverables.actualVideos`), so we
+    ask it rather than inferring one from our own feed, and cache the
+    number on the space. Our own `posts_submitted` notices are a floor
+    under that: they only start at this feature's first deploy, so they
+    undercount every space that predates it, but they can never overcount.
+
+    The API is consulted only when what we already know isn't enough —
+    that is, only when the alternative is asking a creator for links they
+    may have given us already. Being certain is worth a call at that
+    moment; when the count is plainly sufficient, nothing is fetched.
+    """
+    from services import chat_service
+    from services import submission_links
+
+    local = _event_count(
+        db, chat_space_id=space.id, kind=chat_service.KIND_POSTS_SUBMITTED
+    )
+    cached = getattr(space, "posts_logged", None)
+    known = local if cached is None else max(int(cached), local)
+    if known >= needed or not _due_a_recheck(space.id):
+        return known
+
+    creator = submission_links.fetch_creator(
+        space.campaign_slug, space.creator_username
+    )
+    count = submission_links.posts_logged_from_payload(creator)
+    if count is None:
+        # Couldn't find out. Fall back to what we had rather than
+        # inventing a number in either direction.
+        return known
+    submission_links.remember_posts_logged(space.id, count)
+    try:
+        space.posts_logged = count
+    except Exception:  # pragma: no cover - detached instance edge case
+        pass
+    return max(count, local)
+
+
 def _approval_awaiting_posts(db, space: ChatSpace, drafts) -> Optional[ReviewSubmission]:
     """
     The approved draft whose live post links we're still waiting on, if any.
 
-    Compares message ids rather than timestamps: both the approval notice
-    and the posts notice are rows in this space's feed, so their order is
-    exact and immune to clock skew between us and the campaigns site.
+    Counted, not paired: N approvals against M videos with links logged.
+    An earlier version compared the newest decision notice against the
+    newest posts notice, which couldn't express which approval had been
+    answered — any later decision, including a changes-requested on a
+    different draft, put the posts notice "behind" again and reopened a
+    step the creator had already done.
     """
     approved = [d for d in drafts if d.decision == APPROVED]
     if not approved:
         return None
 
-    # Import here rather than at module scope: chat_service imports this
-    # module for the event payloads it attaches to decisions.
-    from services import chat_service
-
-    approval_event_id = _latest_event_id(
-        db, chat_space_id=space.id, kind=chat_service.KIND_REVIEW_DECISION
-    )
-    posts_event_id = _latest_event_id(
-        db, chat_space_id=space.id, kind=chat_service.KIND_POSTS_SUBMITTED
-    )
-    if posts_event_id and posts_event_id > approval_event_id:
-        # They've shared links since the last thing the brand decided.
+    posts_logged = _posts_logged(db, space, needed=len(approved))
+    if posts_logged >= len(approved):
+        # Every approved draft is accounted for.
         return None
-    return approved[-1]
+    # The oldest approval nothing has answered yet.
+    return approved[min(posts_logged, len(approved) - 1)]
 
 
 def resolve(space: ChatSpace) -> Optional[NextStep]:
