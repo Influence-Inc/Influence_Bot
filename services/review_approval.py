@@ -25,9 +25,8 @@ from models.models import (
     ReviewSubmission,
     SessionLocal,
 )
-from services import chat_service
+from services import chat_service, submission_links
 from services.email_service import EmailService
-from services.reelstats_api import ReelStatsAPI
 from templates.email_templates import video_approved
 from templates.slack_blocks import build_review_approved_blocks
 
@@ -35,42 +34,6 @@ logger = logging.getLogger(__name__)
 
 _email_service = EmailService()
 
-
-def _fetch_submit_posts_url(
-    campaign_slug: str, creator_username: str
-) -> str | None:
-    """
-    Look up ``campaigns[].creators[].submissionLinks.submitPostsUrl`` from
-    the live ReelStats API for this (creator, campaign).
-
-    The URL is unique per creator-per-campaign and only lives in the
-    ReelStats API response — the ``review_submitted`` webhook payload
-    doesn't carry ``submissionLinks``, so the cached column on
-    ReviewSubmission is almost always NULL. The fix is to ask the API
-    at approval time.
-
-    Returns None on any failure (missing slug/username, network error,
-    no campaign match, no creator match, missing field). The caller
-    falls back to whatever (if anything) is cached on the row.
-    """
-    if not campaign_slug or not creator_username:
-        return None
-    try:
-        campaigns = ReelStatsAPI().get_campaigns()
-    except Exception as exc:
-        logger.warning("submitPostsUrl lookup: ReelStats API failed: %s", exc)
-        return None
-    target_user = creator_username.lower().lstrip("@")
-    for campaign in campaigns:
-        if campaign.get("slug") != campaign_slug:
-            continue
-        for creator in campaign.get("creators", []):
-            uname = (creator.get("username") or "").lower().lstrip("@")
-            if uname != target_user:
-                continue
-            links = creator.get("submissionLinks") or {}
-            return links.get("submitPostsUrl") or None
-    return None
 
 AUTO_APPROVE_AFTER = timedelta(hours=24)
 AUTO_APPROVE_ACTOR_ID = "system"
@@ -133,13 +96,14 @@ def approve_review_core(
     finally:
         db.close()
 
-    # The webhook payload doesn't carry submissionLinks, so the cached
-    # column is almost always NULL. Fetch the live URL from the
-    # ReelStats API so the approval email actually includes it.
+    # Rows written before the webhook carried submissionLinks have a NULL
+    # column; ask the ReelStats API so the approval email still includes
+    # the link. Missing stays missing — video_approved() drops the sentence
+    # rather than shipping a broken URL.
     if not submit_posts_url:
-        submit_posts_url = _fetch_submit_posts_url(
-            campaign_slug, creator_username
-        )
+        submit_posts_url = submission_links.fetch_from_api(
+            campaign_slug, creator_username, use_miss_cache=False
+        ).submit_posts_url
 
     if creator_email:
         template = video_approved(

@@ -12,6 +12,8 @@ Routes:
   POST /chat/<space_id>/ai-draft       — admin-only: AI-drafted reply options
   POST /chat/<space_id>/read          — mark messages read up to id
   GET  /chat/<space_id>/link-preview/<msg_id> — thumbnail for a draft link
+  GET  /chat/<space_id>/go/<step>     — creator-only: send them to the
+                                        submission page their next step needs
   GET  /chat/attachment/<id>          — serve a stored attachment
 
   GET  /admin/chats                   — admin list (token-gated)
@@ -43,7 +45,7 @@ from flask import (
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from config import Config
-from services import ai_drafts, chat_service, link_preview
+from services import ai_drafts, chat_service, creator_next_step, link_preview
 from services.chat_pubsub import maybe_publish_typing, subscribe as pubsub_subscribe
 from services.chat_service import (
     archive_for_campaign,
@@ -307,8 +309,28 @@ def chat_page(slug: str):
         initial_read_state=initial_read,
         is_admin=(sess.party == ADMIN_PARTY),
         ai_drafts_enabled=ai_drafts.is_configured(),
+        next_step=_next_step_payload(space),
     )
     return Response(html, mimetype="text/html")
+
+
+def _next_step_payload(space) -> dict | None:
+    """
+    The creator's open action on this space, as a dict for the page.
+
+    Resolved for every party — the creator acts on it, the admin sees a
+    read-only mirror of what the creator is being shown, and the brand
+    sees nothing (the template decides). Never raises: a chat that can't
+    work out a next step still has a conversation to render.
+    """
+    try:
+        step = creator_next_step.resolve(space)
+    except Exception as exc:
+        logger.warning(
+            "next step unavailable for chat space %s: %s", space.id, exc
+        )
+        return None
+    return step.as_dict() if step else None
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +350,14 @@ def chat_messages_poll(slug: str):
     except ValueError:
         since = 0
     msgs = chat_service.list_messages(chat_space_id=space.id, since_id=since)
-    return jsonify({"messages": msgs})
+    # An approval, or the creator's own post links landing, changes what it's
+    # their turn to do. Carrying the current step on every poll keeps the UI
+    # in step without a reload, and lets the page refresh it by polling with
+    # `since=<latest>` when an event arrives over SSE — two indexed reads.
+    return jsonify({
+        "messages": msgs,
+        "next_step": _next_step_payload(space),
+    })
 
 
 # In-memory per-session rate limit: 30 messages / 60s.
@@ -654,6 +683,102 @@ def chat_link_preview(slug: str, message_id: int):
     )
 
 
+@bp.route("/chat/<slug>/go/<step>", methods=["GET"])
+def chat_next_step_go(slug: str, step: str):
+    """
+    Send the creator to the submission page their next step calls for.
+
+    The destination is never a parameter: the step key is looked up against
+    what this space's state actually says is open, and the URL comes from
+    the space's own cached submission links. So the creator's submission
+    token never sits in the chat page's markup where a screenshot or a
+    forwarded link would leak it, and a stale bookmark for a step that's
+    since been done lands back in the chat rather than on a form nobody
+    needs to fill in.
+
+    Creator-only. The brand and the INFLUENCE team can see that the step
+    exists, but it isn't theirs to take.
+    """
+    space, err = _resolve_slug(slug)
+    if err is not None:
+        return err
+    sess, err = _require_session_for_space(space.id)
+    if err is not None:
+        return err
+
+    if sess.party != "creator":
+        return _error_response(
+            "Not your step",
+            "Only the creator can submit from this chat.",
+            status=403,
+        )
+
+    key = creator_next_step.ROUTE_KEYS.get(step)
+    current = creator_next_step.resolve(space) if key else None
+    if current is None or current.key != key:
+        # Nothing outstanding, or outstanding but not this. Either way the
+        # conversation is the right place to be.
+        return _redirect_to(_chat_path_for(space))
+
+    url = creator_next_step.url_for_step(space, key)
+    if not url:
+        return _error_response(
+            "Link unavailable",
+            "We couldn't open your submission page just now. Please try "
+            "again shortly, or use the link from your email.",
+            status=503,
+        )
+    chat_url = _chat_url_for(space)
+    if chat_url:
+        url = _with_return_to(url, chat_url)
+    return _redirect_to(url)
+
+
+def _chat_path_for(space) -> str:
+    """Path back to this chat. Relative, so it works without any config."""
+    return f"/chat/{space.public_slug or space.id}"
+
+
+def _chat_url_for(space) -> str | None:
+    """
+    Absolute URL of this chat, or None if the base URL isn't configured.
+
+    Only used for the `return` hand-back, which has to be absolute for the
+    campaigns site to check it against the chat's origin.
+    """
+    base = (Config.PUBLIC_BASE_URL or "").rstrip("/")
+    if not base:
+        return None
+    return f"{base}{_chat_path_for(space)}"
+
+
+def _with_return_to(url: str, chat_url: str) -> str:
+    """
+    Add `?return=<chat url>` so the submission page can hand the creator
+    back to the conversation once they're done. The campaigns site only
+    honours a return URL on the chat's own origin.
+    """
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}{urlencode({'return': chat_url})}"
+
+
+def _redirect_to(url: str) -> Response:
+    """
+    302 without leaking the chat's referrer to the campaigns site.
+
+    Not cached: the right destination depends on state that changes.
+    """
+    return Response(
+        "",
+        status=302,
+        headers={
+            "Location": url,
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Attachments
 # ---------------------------------------------------------------------------
@@ -790,6 +915,9 @@ def admin_chat_view(space_id: int):
         initial_read_state=initial_read,
         is_admin=True,
         ai_drafts_enabled=ai_drafts.is_configured(),
+        # Read-only here: the team sees what the creator is being shown, so
+        # "chase them" and "chase the brand" are distinguishable at a glance.
+        next_step=_next_step_payload(space),
     )
     return Response(html, mimetype="text/html")
 

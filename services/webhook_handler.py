@@ -19,6 +19,7 @@ from slack_sdk.errors import SlackApiError
 
 from config import Config
 from models.models import ReviewSubmission, SessionLocal
+from services import submission_links
 from services.brand_routing import post_to_brand_workspace
 from templates.slack_blocks import (
     build_review_submitted_blocks,
@@ -214,8 +215,7 @@ class WebhookHandler:
             brand_name = campaign.get("brandName") or campaign.get("brand_name") or ""
             video_link = review.get("videoLink") or review.get("video_link") or ""
             notes = review.get("notes", "") or ""
-            submission_links = creator.get("submissionLinks") or {}
-            submit_posts_url = submission_links.get("submitPostsUrl") or None
+            links = submission_links.from_payload(creator)
 
             if not video_link:
                 logger.warning(
@@ -233,7 +233,7 @@ class WebhookHandler:
                     creator_email=creator.get("email"),
                     video_link=video_link,
                     notes=notes,
-                    submit_posts_url=submit_posts_url,
+                    submit_posts_url=links.submit_posts_url,
                 )
                 db.add(submission)
                 db.commit()
@@ -248,6 +248,13 @@ class WebhookHandler:
             # chat in the brand's browser AND fires our backend handler, which
             # records the decision + emails the creator.
             brand_chat_url, chat_space_id = self._open_chat_for_review(review_id)
+
+            # Cache the creator's two submission pages on the space so the
+            # chat can point them at the right one without asking the
+            # campaigns API again. Best-effort — a chat that can't resolve
+            # a URL simply shows no next step.
+            if chat_space_id and links:
+                submission_links.remember(chat_space_id, links)
 
             # The admin (#content-reviews) copy gets an "Open as Admin" button
             # into the admin side of the same chat space instead of a Request
@@ -356,6 +363,19 @@ class WebhookHandler:
 
             brand_name = campaign.get("brandName") or campaign.get("brand_name") or ""
             video_title = video.get("title", "")
+
+            # Close the loop in the chat: the approval notice said "post it,
+            # then add your links", and this is the other half. It's also
+            # what retires that step for the creator.
+            self._record_posts_in_chat(
+                campaign_slug=campaign.get("slug"),
+                username=username,
+                creator=creator,
+                video=video,
+                platforms=[link["platform"] for link in links],
+                video_title=video_title,
+            )
+
             admin_blocks = build_video_links_submitted_blocks(
                 creator_username=username,
                 campaign_name=campaign_name,
@@ -397,6 +417,46 @@ class WebhookHandler:
         except Exception as e:
             logger.exception(f"Failed to handle video_links_submitted: {e}")
             return False
+
+    def _record_posts_in_chat(
+        self,
+        *,
+        campaign_slug,
+        username: str,
+        creator: dict,
+        video: dict,
+        platforms: list,
+        video_title: str,
+    ) -> None:
+        """
+        Post the "live post links added" notice into the creator's chat, and
+        refresh the cached submission links while we have them.
+
+        Entirely best-effort: this is a notification handler, and a chat
+        that can't be found or written to must not fail the Slack posts
+        that are this handler's actual job.
+        """
+        try:
+            from services import chat_service
+
+            space = chat_service.find_for_campaign_creator(
+                campaign_slug=campaign_slug, creator_username=username
+            )
+            if space is None or space.status == "archived":
+                return
+            links = submission_links.from_payload(creator)
+            if links:
+                submission_links.remember(space.id, links)
+            chat_service.post_posts_submitted_event(
+                chat_space_id=space.id,
+                platforms=platforms,
+                video_title=video_title,
+                video_id=str(video.get("id") or ""),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not record post links in chat for @%s: %s", username, exc
+            )
 
     # ------------------------------------------------------------------
     # Live-data handlers
