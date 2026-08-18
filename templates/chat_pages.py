@@ -180,13 +180,18 @@ CHAT_PAGE = """\
 
     /* Above the composer: always there while the step is open, so it stays
        quiet. Built as a sibling of the composer input — same white fill,
-       same hairline — carrying the parts of an iOS list row: a tinted icon
-       tile, a title, a secondary line, and a disclosure chevron. */
+       same hairline, same capsule — carrying the parts of an iOS list row:
+       a tinted icon tile, a title, a secondary line, and a disclosure
+       chevron. The radius is 99px, not the input's literal 22px: the input
+       is only 42px tall, so 22px already clamps it to a full capsule, while
+       this row is ~53px and the same number would land at 83% of one and
+       read as a card parked next to an input. Matching the shape is what
+       makes them a pair; matching the number wouldn't. */
     .nextstep{max-width:820px;margin:0 auto;width:100%;padding:9px 16px 3px;
       display:flex;align-items:center;gap:8px}
     .nextstep.hidden{display:none}
-    .nextstep-main{flex:1;display:flex;align-items:center;gap:11px;padding:8px 12px 8px 9px;
-      background:#fff;border:.5px solid var(--line-2);border-radius:16px;
+    .nextstep-main{flex:1;display:flex;align-items:center;gap:11px;padding:8px 14px 8px 12px;
+      background:#fff;border:.5px solid var(--line-2);border-radius:99px;
       color:inherit;text-decoration:none;min-width:0;-webkit-tap-highlight-color:transparent;
       transition:transform .14s cubic-bezier(.32,.72,0,1),background .14s ease}
     .nextstep-main:hover{background:#FAFAFA}
@@ -378,7 +383,7 @@ CHAT_PAGE = """\
       .draft{font-size:15px;padding:8px 14px}
       .banner{padding:9px 12px;font-size:12px}
       .nextstep{padding:8px 10px 3px;gap:6px}
-      .nextstep-main{padding:8px 10px 8px 8px;gap:9px}
+      .nextstep-main{padding:8px 12px 8px 10px;gap:9px}
       .nextstep-label{font-size:14px}
       .nextstep-detail{font-size:12px}
     }
