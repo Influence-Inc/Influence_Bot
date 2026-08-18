@@ -23,6 +23,12 @@ CHAT_PAGE = """\
       --sent-bg:#1C1C1E; --sent-fg:#fff;
       --muted:#8E8E93; --line:#D1D1D6; --line-2:#C6C6C8;
       --brand-av:#1C1C1E;
+      /* systemBlue, the accent this page already uses for links in a
+         received bubble. Anything tappable that isn't a message is tinted
+         with it — the sent-bubble black means "you said this" and must not
+         be borrowed for chrome. --chev is the tertiary grey iOS uses for a
+         list row's disclosure arrow. */
+      --tint:#007AFF; --tint-press:#0062D8; --chev:#C7C7CC;
     }
     html,body{margin:0;padding:0;background:#fff;color:#000;}
     body{
@@ -148,7 +154,7 @@ CHAT_PAGE = """\
       width:15px;height:15px;border-radius:99px;color:#fff;flex-shrink:0}
     .sys.ok .sys-dot{background:#34C759}
     .sys.chg .sys-dot{background:#FF9F0A}
-    .sys.post .sys-dot{background:#0A84FF}
+    .sys.post .sys-dot{background:var(--tint)}
 
     /* ── NEXT STEP ──
        At most one of these exists at a time, anywhere on the page: whatever
@@ -156,39 +162,53 @@ CHAT_PAGE = """\
        inline under the system notice that opened it, so the history reads
        in order, and as a strip above the composer so it's reachable from
        anywhere in a long scroll. */
-    .sys-act{display:flex;justify-content:center;margin-top:7px}
-    .sys-act a{display:inline-flex;align-items:center;gap:6px;padding:7px 15px;border-radius:99px;
-      background:var(--sent-bg);color:#fff;font-size:12.5px;font-weight:600;letter-spacing:-.01em;
-      text-decoration:none;transition:transform .14s cubic-bezier(.32,.72,0,1),opacity .14s ease}
-    .sys-act a:active{transform:scale(.97)}
-    .sys-act a .chev{opacity:.65;flex-shrink:0}
+    /* In the feed: the moment the step opens, so it carries weight. iOS's
+       prominent action — tinted fill, capsule, semibold — sitting directly
+       under the grey notice that produced it. */
+    .sys-act{display:flex;justify-content:center;margin-top:8px}
+    .sys-act a{display:inline-flex;align-items:center;gap:4px;padding:8px 12px 8px 16px;border-radius:99px;
+      background:var(--tint);color:#fff;font-size:13px;font-weight:600;letter-spacing:-.01em;
+      text-decoration:none;-webkit-tap-highlight-color:transparent;
+      transition:transform .14s cubic-bezier(.32,.72,0,1),background .14s ease}
+    .sys-act a:hover{background:var(--tint-press)}
+    .sys-act a:active{transform:scale(.96)}
+    .sys-act a .chev{opacity:.75;flex-shrink:0;margin-right:-3px}
     /* The admin sees what the creator is being shown, but it isn't theirs
        to click, so it reads as a label rather than an affordance. */
     .sys-act.mirror span{display:inline-flex;align-items:center;gap:6px;padding:6px 13px;border-radius:99px;
       background:var(--recv-bg);color:#3C3C43;font-size:11.5px;font-weight:500;letter-spacing:-.005em}
 
-    /* The strip. Sits inside the sticky composer so it scrolls with nothing
-       and never covers the last message. */
+    /* Above the composer: always there while the step is open, so it stays
+       quiet. Built as a sibling of the composer input — same white fill,
+       same hairline — carrying the parts of an iOS list row: a tinted icon
+       tile, a title, a secondary line, and a disclosure chevron. */
     .nextstep{max-width:820px;margin:0 auto;width:100%;padding:9px 16px 3px;
-      display:flex;align-items:center;gap:11px}
+      display:flex;align-items:center;gap:8px}
     .nextstep.hidden{display:none}
-    .nextstep-main{flex:1;display:flex;align-items:center;gap:11px;padding:10px 14px;border-radius:14px;
-      background:var(--sent-bg);color:#fff;text-decoration:none;min-width:0;
-      transition:transform .14s cubic-bezier(.32,.72,0,1)}
-    .nextstep-main:active{transform:scale(.99)}
-    .nextstep-icon{width:28px;height:28px;border-radius:99px;background:rgba(255,255,255,.16);
+    .nextstep-main{flex:1;display:flex;align-items:center;gap:11px;padding:8px 12px 8px 9px;
+      background:#fff;border:.5px solid var(--line-2);border-radius:16px;
+      color:inherit;text-decoration:none;min-width:0;-webkit-tap-highlight-color:transparent;
+      transition:transform .14s cubic-bezier(.32,.72,0,1),background .14s ease}
+    .nextstep-main:hover{background:#FAFAFA}
+    .nextstep-main:active{transform:scale(.985)}
+    .nextstep-icon{width:29px;height:29px;border-radius:8px;background:var(--tint);color:#fff;
       display:flex;align-items:center;justify-content:center;flex-shrink:0}
     .nextstep-text{min-width:0;flex:1}
-    .nextstep-label{display:block;font-size:14px;font-weight:600;letter-spacing:-.015em;line-height:1.25;
-      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .nextstep-detail{display:block;font-size:11.5px;line-height:1.3;margin-top:1px;color:rgba(255,255,255,.62);
+    .nextstep-label{display:block;font-size:14.5px;font-weight:600;color:#000;letter-spacing:-.015em;
+      line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .nextstep-detail{display:block;font-size:12.5px;line-height:1.3;margin-top:2px;color:var(--muted);
       letter-spacing:-.005em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .nextstep-go{opacity:.7;flex-shrink:0}
+    .nextstep-go{color:var(--chev);flex-shrink:0;display:flex}
+    /* The admin's mirror: the same row, drained of anything that says
+       "tap me" — no white cell, no tint, no chevron. */
+    .nextstep-main.mirror{background:var(--recv-bg);border-color:transparent;cursor:default}
+    .nextstep-main.mirror .nextstep-icon{background:rgba(0,0,0,.07);color:#3C3C43}
+    .nextstep-main.mirror .nextstep-label{color:#3C3C43;font-weight:500}
     /* Dismiss is deliberately outside the tap target: reading the strip and
        getting rid of it are different intents, and it comes back on reload
        because the step is still open. */
     .nextstep-x{width:28px;height:28px;border-radius:99px;color:var(--muted);flex-shrink:0;
-      display:flex;align-items:center;justify-content:center}
+      display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent}
     .nextstep-x:hover{background:var(--recv-bg);color:#3C3C43}
     /* Once a review is approved (or the campaign has ended) nobody can type,
        and a disabled input is just a dead end at the exact moment the
@@ -357,9 +377,10 @@ CHAT_PAGE = """\
       .drafts{padding:8px 10px 0}
       .draft{font-size:15px;padding:8px 14px}
       .banner{padding:9px 12px;font-size:12px}
-      .nextstep{padding:8px 10px 3px;gap:8px}
-      .nextstep-main{padding:9px 12px;gap:9px}
-      .nextstep-label{font-size:13.5px}
+      .nextstep{padding:8px 10px 3px;gap:6px}
+      .nextstep-main{padding:8px 10px 8px 8px;gap:9px}
+      .nextstep-label{font-size:14px}
+      .nextstep-detail{font-size:12px}
     }
   </style>
 </head>
@@ -499,7 +520,12 @@ CHAT_PAGE = """\
   var PLAY = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><path d="M9 6.6 L18.6 12 L9 17.4 Z"></path></svg>';
   var TICK = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
   var PENCIL = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"></path></svg>';
-  var LINKICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"></path></svg>';
+  // Two sizes of the same glyph: the small one rides in a 15px system dot
+  // (heavier stroke so it survives at that size), the large one in the
+  // 29px tinted tile alongside UPLOAD.
+  var LINK_PATH = '<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"></path>';
+  var LINKICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">' + LINK_PATH + '</svg>';
+  var LINKICON_LG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + LINK_PATH + '</svg>';
   var CHEV = '<svg class="chev" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
   var UPLOAD = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>';
 
@@ -700,6 +726,9 @@ CHAT_PAGE = """\
   function stepUrl(step){
     return '/chat/' + spaceSlug + '/go/' + encodeURIComponent(step.route);
   }
+  function stepGlyph(step){
+    return step.key === 'submit_posts' ? LINKICON_LG : UPLOAD;
+  }
   // The strip is a nudge, not a blocker: someone who's read it and wants to
   // get on with the conversation can put it away. Deliberately held in
   // memory only, so opening the chat again shows it — the step is still
@@ -734,7 +763,7 @@ CHAT_PAGE = """\
     if(canAct){
       nextStepEl.innerHTML =
         '<a class="nextstep-main" href="' + escapeHtml(stepUrl(step)) + '">' +
-          '<span class="nextstep-icon">' + (step.key === 'submit_posts' ? LINKICON : UPLOAD) + '</span>' +
+          '<span class="nextstep-icon">' + stepGlyph(step) + '</span>' +
           '<span class="nextstep-text">' +
             '<span class="nextstep-label">' + escapeHtml(step.label) + '</span>' +
             '<span class="nextstep-detail">' + escapeHtml(step.detail) + '</span>' +
@@ -748,12 +777,11 @@ CHAT_PAGE = """\
       if(x) x.addEventListener('click', function(){ dismiss(step); renderNextStep(); });
     }else{
       nextStepEl.innerHTML =
-        '<div class="nextstep-main" style="background:var(--recv-bg);color:#3C3C43">' +
-          '<span class="nextstep-icon" style="background:rgba(0,0,0,.06)">' +
-            (step.key === 'submit_posts' ? LINKICON : UPLOAD) + '</span>' +
+        '<div class="nextstep-main mirror">' +
+          '<span class="nextstep-icon">' + stepGlyph(step) + '</span>' +
           '<span class="nextstep-text">' +
             '<span class="nextstep-label">Waiting on @' + escapeHtml(creatorUsername) + '</span>' +
-            '<span class="nextstep-detail" style="color:var(--muted)">' + escapeHtml(step.label) + '</span>' +
+            '<span class="nextstep-detail">' + escapeHtml(step.label) + '</span>' +
           '</span>' +
         '</div>';
     }
