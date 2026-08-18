@@ -98,6 +98,52 @@ def _recently_missed(key: tuple[str, str]) -> bool:
     return False
 
 
+def fetch_creator(
+    campaign_slug: Optional[str],
+    creator_username: Optional[str],
+    *,
+    use_miss_cache: bool = True,
+) -> Optional[dict]:
+    """
+    This creator's record on this campaign from the live ReelStats API.
+
+    The shared primitive behind every lookup here: it carries the
+    submission links, and also `deliverables`, which is what
+    services/creator_next_step.py reads to learn how many of the
+    creator's videos already have their post links logged.
+
+    Returns None on any failure — missing slug/username, network error,
+    no campaign match, no creator match. Callers treat that as "we don't
+    know", never as an error worth surfacing.
+
+    `use_miss_cache=False` forces the call even if a recent lookup came
+    back empty, for the once-per-event paths where latency is fine and
+    being right matters more.
+    """
+    if not campaign_slug or not creator_username:
+        return None
+    key = _miss_key(campaign_slug, creator_username)
+    if use_miss_cache and _recently_missed(key):
+        return None
+    try:
+        campaigns = ReelStatsAPI().get_campaigns()
+    except Exception as exc:
+        logger.warning("ReelStats creator lookup failed: %s", exc)
+        _misses[key] = time.monotonic()
+        return None
+    target_user = key[1]
+    for campaign in campaigns:
+        if campaign.get("slug") != campaign_slug:
+            continue
+        for creator in campaign.get("creators", []):
+            uname = (creator.get("username") or "").lower().lstrip("@")
+            if uname == target_user:
+                _misses.pop(key, None)
+                return creator
+    _misses[key] = time.monotonic()
+    return None
+
+
 def fetch_from_api(
     campaign_slug: Optional[str],
     creator_username: Optional[str],
@@ -106,40 +152,78 @@ def fetch_from_api(
 ) -> SubmissionLinks:
     """
     Look up both URLs from the live ReelStats API for this (creator,
-    campaign).
-
-    Returns EMPTY on any failure — missing slug/username, network error,
-    no campaign match, no creator match, missing fields. Callers treat
-    that as "no link", never as an error worth surfacing.
-
-    `use_miss_cache=False` forces the call even if a recent lookup came
-    back empty, for the once-per-approval paths where latency is fine and
-    being right matters more.
+    campaign). EMPTY when we can't, which callers render as "no link".
     """
-    if not campaign_slug or not creator_username:
-        return EMPTY
-    key = _miss_key(campaign_slug, creator_username)
-    if use_miss_cache and _recently_missed(key):
-        return EMPTY
+    creator = fetch_creator(
+        campaign_slug, creator_username, use_miss_cache=use_miss_cache
+    )
+    return from_payload(creator) if creator is not None else EMPTY
+
+
+def posts_logged_from_payload(creator: Optional[dict]) -> Optional[int]:
+    """
+    How many of this creator's videos already have their post links
+    logged, per the campaigns site: `deliverables.actualVideos`, which is
+    `videos.filter(v => v.hasLinks).length` at the source.
+
+    None when the record doesn't carry a usable number — the caller must
+    not read that as zero, which would claim the creator has posted
+    nothing.
+    """
+    if not creator:
+        return None
+    deliverables = creator.get("deliverables")
+    if not isinstance(deliverables, dict):
+        return None
+    value = deliverables.get("actualVideos")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def remember_posts_logged(chat_space_id: int, count: Optional[int]) -> None:
+    """
+    Cache the authoritative post-links count on the space.
+
+    Never raises and never writes None: not knowing has to stay
+    distinguishable from knowing the answer is zero, or a failed lookup
+    would permanently claim the creator has posted nothing.
+    """
+    if not chat_space_id or count is None or count < 0:
+        return
+    db = SessionLocal()
     try:
-        campaigns = ReelStatsAPI().get_campaigns()
+        space = db.query(ChatSpace).get(chat_space_id)
+        if space is None or space.posts_logged == count:
+            return
+        space.posts_logged = count
+        db.commit()
     except Exception as exc:
-        logger.warning("submissionLinks lookup: ReelStats API failed: %s", exc)
-        _misses[key] = time.monotonic()
-        return EMPTY
-    target_user = key[1]
-    for campaign in campaigns:
-        if campaign.get("slug") != campaign_slug:
-            continue
-        for creator in campaign.get("creators", []):
-            uname = (creator.get("username") or "").lower().lstrip("@")
-            if uname == target_user:
-                found = from_payload(creator)
-                if found:
-                    _misses.pop(key, None)
-                    return found
-    _misses[key] = time.monotonic()
-    return EMPTY
+        logger.warning(
+            "Could not cache posts_logged on chat space %s: %s", chat_space_id, exc
+        )
+    finally:
+        db.close()
+
+
+def refresh_posts_logged(space) -> Optional[int]:
+    """
+    Re-read the count from the campaigns site and cache it.
+
+    Called when a `video_links_submitted` webhook says it changed — the
+    only thing that moves this number — so the chat's render path never
+    has to. Returns the new count, or None if we couldn't find out.
+    """
+    if space is None:
+        return None
+    creator = fetch_creator(
+        space.campaign_slug, space.creator_username, use_miss_cache=False
+    )
+    count = posts_logged_from_payload(creator)
+    if count is None:
+        return None
+    remember_posts_logged(space.id, count)
+    return count
 
 
 def remember(
