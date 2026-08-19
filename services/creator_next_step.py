@@ -49,6 +49,14 @@ the step was never going to arrive. Counting a fact we don't own was the
 mistake; the notices are still written, but they're a floor for when the
 API can't be reached, not the ledger.
 
+Which approval a given post fulfils is not recorded anywhere: `videos[]`
+and `reviews[]` on the campaigns site share no field, so a post cannot be
+traced back to the draft it came from. Approvals are matched to postings
+by order instead — see `_unanswered_approval`. That is enough to stop a
+video which skipped review from cancelling out an approval that still
+owes its links, but it is an approximation, and a genuine pairing would
+have to start with a link between the two on the campaigns site.
+
 A URL we can't resolve means no step at all, rather than a button that
 goes nowhere — the same rule the approval email follows.
 """
@@ -131,6 +139,106 @@ def _drafts_for_space(db, space: ChatSpace) -> list[ReviewSubmission]:
         query = query.filter(ReviewSubmission.campaign_name == space.campaign_name)
     rows = query.order_by(ReviewSubmission.id.asc()).all()
     return [r for r in rows if not r.ignored]
+
+
+def _decision_event_ids(db, chat_space_id: int) -> dict:
+    """`{review_id: message id}` for the approval notices in this space."""
+    from services import chat_service
+
+    rows = (
+        db.query(ChatMessage.review_id, func.max(ChatMessage.id))
+        .filter(
+            ChatMessage.chat_space_id == chat_space_id,
+            ChatMessage.kind == chat_service.KIND_REVIEW_DECISION,
+            ChatMessage.review_id.isnot(None),
+        )
+        .group_by(ChatMessage.review_id)
+        .all()
+    )
+    return {int(review_id): int(msg_id) for review_id, msg_id in rows}
+
+
+def _posting_event_ids(db, chat_space_id: int) -> list:
+    """Ids of this space's post-links notices, oldest first."""
+    from services import chat_service
+
+    rows = (
+        db.query(ChatMessage.id)
+        .filter(
+            ChatMessage.chat_space_id == chat_space_id,
+            ChatMessage.kind == chat_service.KIND_POSTS_SUBMITTED,
+        )
+        .order_by(ChatMessage.id.asc())
+        .all()
+    )
+    return [int(r[0]) for r in rows]
+
+
+def _unanswered_approval(db, space: ChatSpace, approved, posts_logged: int):
+    """
+    The oldest approved draft whose live post links we're still waiting on.
+
+    Bare totals can't answer this. A creator who posts a video whose draft
+    never went through the review page inflates the posted count, and that
+    extra post silently cancels out an approved draft that genuinely still
+    owes its links.
+
+    Nothing in the data pairs a post with the approval it fulfils —
+    `videos[]` and `reviews[]` on the campaigns site share no field — so
+    this uses the next best thing we do own: order. A post-links notice can
+    only answer an approval that came *before* it, and each notice answers
+    at most one. An approval with nothing recorded after it is outstanding
+    however high the global total climbs.
+
+    Order only reaches back as far as the notices do. For approvals decided
+    before this space recorded its first one there is no per-post evidence
+    at all, and the campaigns site's total is the only thing to go on —
+    which is what keeps spaces that predate the notices from being asked
+    for links they gave long ago.
+    """
+    if not approved:
+        return None
+
+    decision_ids = _decision_event_ids(db, space.id)
+    postings = _posting_event_ids(db, space.id)
+
+    # Walk the approvals oldest first, letting each consume the earliest
+    # notice recorded after it that no earlier approval has taken.
+    used = 0
+    unanswered = []
+    for approval in approved:
+        decided_at = decision_ids.get(approval.id)
+        if decided_at is not None:
+            while used < len(postings) and postings[used] < decided_at:
+                used += 1
+        if used < len(postings):
+            used += 1
+        else:
+            unanswered.append(approval)
+
+    if not unanswered:
+        return None
+
+    first_posting = postings[0] if postings else None
+    for approval in unanswered:
+        decided_at = decision_ids.get(approval.id)
+        modern = (
+            first_posting is not None
+            and decided_at is not None
+            and decided_at > first_posting
+        )
+        if modern:
+            # Recorded evidence covers this one, and none of it answers it.
+            return approval
+
+    # Only pre-notice approvals are left, and the site's own total is all we
+    # have for them. It says how many are posted but not which, so assume
+    # the oldest went up first — the order creators actually work in.
+    answered_by_notices = len(approved) - len(unanswered)
+    covered = max(0, posts_logged - answered_by_notices)
+    if covered >= len(unanswered):
+        return None
+    return unanswered[covered]
 
 
 def _event_count(db, *, chat_space_id: int, kind: str) -> int:
@@ -277,11 +385,7 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
         posts_logged, videos_required = _progress(
             db, space, approved_count=len(approved)
         )
-        awaiting_posts = (
-            approved[min(posts_logged, len(approved) - 1)]
-            if approved and posts_logged < len(approved)
-            else None
-        )
+        awaiting_posts = _unanswered_approval(db, space, approved, posts_logged)
         owes_another = _owes_another_draft(
             drafts=drafts,
             approved_count=len(approved),
