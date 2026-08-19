@@ -326,6 +326,62 @@ def test_a_failed_lookup_is_never_cached_as_zero(monkeypatch):
     assert chat_service.find_by_id(space.id).posts_logged == 1
 
 
+def _post_links(space, video_id):
+    """A post-links submission lands, the way the webhook records it."""
+    chat_service.post_posts_submitted_event(
+        chat_space_id=space.id, platforms=["instagram"], video_id=video_id
+    )
+
+
+def test_a_post_that_skipped_review_cannot_answer_an_approval(monkeypatch):
+    """
+    The reported case. A video whose draft was shared in chat rather than
+    submitted for review still counts on the campaigns site, so comparing
+    bare totals let it cancel out a later approval that genuinely owed its
+    links. Order settles it: a post recorded before an approval cannot be
+    the one that approval is waiting for.
+    """
+    _reset()
+    first = _submit_review()
+    space = _space_for(first)
+    _decide(first, "approved")
+    _post_links(space, "v1")
+    _post_links(space, "v2-never-reviewed")
+
+    second = _submit_review()
+    chat_service.get_or_create_for_review(second)
+    _decide(second, "approved")
+    _api_reports_posted(monkeypatch, 2)
+
+    step = _resolve(space)
+    assert step is not None
+    assert step.key == creator_next_step.KEY_SUBMIT_POSTS
+    assert step.review_id == second
+
+
+def test_history_older_than_the_notices_still_leans_on_the_total(monkeypatch):
+    """
+    Ordering only reaches as far back as the notices do. Two videos posted
+    before any existed, then a third approved and posted with one — the
+    older two must stay settled by the site's total rather than being
+    reopened for want of a notice.
+    """
+    _reset()
+    first = _submit_review()
+    space = _space_for(first)
+    _decide(first, "approved")
+    second = _submit_review()
+    chat_service.get_or_create_for_review(second)
+    _decide(second, "approved")
+    third = _submit_review()
+    chat_service.get_or_create_for_review(third)
+    _decide(third, "approved")
+
+    _post_links(space, "v3")
+    _api_reports_posted(monkeypatch, 3)
+    assert _resolve(space) is None
+
+
 def test_a_finished_deliverable_asks_for_the_next_draft(monkeypatch):
     """
     The reported gap. One video approved, posted and logged, two still
