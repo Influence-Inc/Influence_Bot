@@ -52,12 +52,17 @@ def _offline_campaigns_api(monkeypatch):
     monkeypatch.setattr(submission_links, "fetch_creator", lambda *a, **kw: None)
 
 
-def _api_reports_posted(monkeypatch, count):
-    """The campaigns site reports `count` videos with links logged."""
+def _api_reports_posted(monkeypatch, count, required=None):
+    """
+    The campaigns site reports `count` videos with links logged, against a
+    `required` target (`minVideos`) when the campaign sets one.
+    """
     monkeypatch.setattr(
         submission_links,
         "fetch_creator",
-        lambda *a, **kw: {"deliverables": {"actualVideos": count}},
+        lambda *a, **kw: {
+            "deliverables": {"actualVideos": count, "minVideos": required}
+        },
     )
     _time_passes()
 
@@ -319,6 +324,107 @@ def test_a_failed_lookup_is_never_cached_as_zero(monkeypatch):
     assert _resolve(space) is None
     # Now that we know, it's cached and the next read is free.
     assert chat_service.find_by_id(space.id).posts_logged == 1
+
+
+def test_a_finished_deliverable_asks_for_the_next_draft(monkeypatch):
+    """
+    The reported gap. One video approved, posted and logged, two still
+    owed, nothing with the brand — the creator's move is the next draft,
+    but the step only ever fired when they had sent nothing at all, so
+    they got an empty chat.
+    """
+    _reset()
+    review_id = _submit_review()
+    space = _space_for(review_id)
+    _decide(review_id, "approved")
+    _api_reports_posted(monkeypatch, 1, required=3)
+
+    step = _resolve(space)
+    assert step is not None
+    assert step.key == creator_next_step.KEY_SUBMIT_DRAFT
+    assert step.detail == "1 of 3 videos posted"
+    assert creator_next_step.url_for_step(space, step.key) == REVIEW_URL
+
+
+def test_a_draft_in_flight_counts_towards_what_is_owed(monkeypatch):
+    """
+    Asking again for a draft the creator has already sent would be
+    nagging. What's with the brand counts towards the target, so the step
+    goes quiet until the campaign wants more than is in flight.
+    """
+    _reset()
+    first = _submit_review()
+    space = _space_for(first)
+    _decide(first, "approved")
+    _api_reports_posted(monkeypatch, 1, required=2)
+    assert _resolve(space).key == creator_next_step.KEY_SUBMIT_DRAFT
+
+    second = _submit_review()
+    chat_service.get_or_create_for_review(second)
+    _time_passes()
+    # 1 posted + 1 with the brand covers the 2 the campaign wants.
+    assert _resolve(space) is None
+
+
+def test_an_approved_draft_awaiting_links_is_not_asked_for_twice(monkeypatch):
+    """
+    An approved draft whose links haven't landed is already on its way to
+    being a post. It owes links, not another draft.
+    """
+    _reset()
+    first = _submit_review()
+    space = _space_for(first)
+    _decide(first, "approved")
+    _api_reports_posted(monkeypatch, 0, required=1)
+
+    step = _resolve(space)
+    assert step is not None
+    assert step.key == creator_next_step.KEY_SUBMIT_POSTS
+
+
+def test_a_completed_campaign_asks_for_nothing(monkeypatch):
+    _reset()
+    review_id = _submit_review()
+    space = _space_for(review_id)
+    _decide(review_id, "approved")
+    _api_reports_posted(monkeypatch, 1, required=1)
+    assert _resolve(space) is None
+
+
+def test_a_stale_count_is_refreshed_before_asking_for_another_draft(monkeypatch):
+    """
+    A count fresh enough to settle the approvals can still be too stale to
+    settle the campaign's target. Gating the refresh on approvals alone
+    told a creator who had posted everything "2 of 3".
+    """
+    _reset()
+    first = _submit_review()
+    space = _space_for(first)
+    _decide(first, "approved")
+    second = _submit_review()
+    chat_service.get_or_create_for_review(second)
+    _decide(second, "approved")
+
+    _api_reports_posted(monkeypatch, 2, required=3)
+    assert _resolve(space).key == creator_next_step.KEY_SUBMIT_DRAFT
+
+    # The third goes up. Both approvals were already covered, so nothing
+    # about them would prompt another look.
+    _api_reports_posted(monkeypatch, 3, required=3)
+    assert _resolve(space) is None
+
+
+def test_no_video_target_never_asks_for_another_draft(monkeypatch):
+    """
+    Without `minVideos` there is no shortfall to measure, and inventing a
+    deliverable the campaign never asked for is worse than staying quiet.
+    """
+    _reset()
+    review_id = _submit_review()
+    space = _space_for(review_id)
+    _decide(review_id, "approved")
+    _api_reports_posted(monkeypatch, 1, required=None)
+    assert _resolve(space) is None
 
 
 def test_only_ignored_drafts_means_nothing_is_in_play():

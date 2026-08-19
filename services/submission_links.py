@@ -181,6 +181,66 @@ def posts_logged_from_payload(creator: Optional[dict]) -> Optional[int]:
     return value if value >= 0 else None
 
 
+def videos_required_from_payload(creator: Optional[dict]) -> Optional[int]:
+    """
+    How many videos this creator owes on this campaign
+    (`deliverables.minVideos`).
+
+    None when no target is set, which is a real state: a campaign without
+    one gives us no way to know the creator still owes another draft.
+    """
+    if not creator:
+        return None
+    deliverables = creator.get("deliverables")
+    if not isinstance(deliverables, dict):
+        return None
+    value = deliverables.get("minVideos")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
+
+
+def remember_progress(
+    chat_space_id: int, posts_logged: Optional[int], videos_required: Optional[int]
+) -> None:
+    """
+    Cache this creator's campaign progress on the space.
+
+    `posts_logged` is never written as None — not knowing has to stay
+    distinguishable from knowing the answer is zero, or a failed lookup
+    would permanently claim the creator has posted nothing. A successful
+    lookup always carries it, so a non-NULL `posts_logged` doubles as
+    "we have synced at least once".
+
+    `videos_required` is written as given, None included: "no target set"
+    is a real answer, and holding a stale one would keep asking for drafts
+    a campaign no longer wants.
+    """
+    if not chat_space_id or posts_logged is None or posts_logged < 0:
+        return
+    db = SessionLocal()
+    try:
+        space = db.query(ChatSpace).get(chat_space_id)
+        if space is None:
+            return
+        changed = False
+        if space.posts_logged != posts_logged:
+            space.posts_logged = posts_logged
+            changed = True
+        if space.videos_required != videos_required:
+            space.videos_required = videos_required
+            changed = True
+        if changed:
+            db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Could not cache campaign progress on chat space %s: %s",
+            chat_space_id, exc,
+        )
+    finally:
+        db.close()
+
+
 def remember_posts_logged(chat_space_id: int, count: Optional[int]) -> None:
     """
     Cache the authoritative post-links count on the space.
@@ -206,13 +266,14 @@ def remember_posts_logged(chat_space_id: int, count: Optional[int]) -> None:
         db.close()
 
 
-def refresh_posts_logged(space) -> Optional[int]:
+def refresh_progress(space) -> Optional[int]:
     """
-    Re-read the count from the campaigns site and cache it.
+    Re-read this creator's campaign progress and cache it.
 
-    Called when a `video_links_submitted` webhook says it changed — the
-    only thing that moves this number — so the chat's render path never
-    has to. Returns the new count, or None if we couldn't find out.
+    Called when a `video_links_submitted` webhook says the posted count
+    changed — the only thing that moves it — so the chat's render path
+    doesn't have to. Returns the new posted count, or None if we couldn't
+    find out.
     """
     if space is None:
         return None
@@ -222,7 +283,7 @@ def refresh_posts_logged(space) -> Optional[int]:
     count = posts_logged_from_payload(creator)
     if count is None:
         return None
-    remember_posts_logged(space.id, count)
+    remember_progress(space.id, count, videos_required_from_payload(creator))
     return count
 
 

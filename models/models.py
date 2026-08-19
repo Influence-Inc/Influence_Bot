@@ -52,17 +52,20 @@ def init_db():
 
 
 def _migrate_chat_spaces_posts_logged():
-    """Add `posts_logged` to `chat_spaces` on pre-column deploys. Idempotent."""
+    """
+    Add the cached campaign-progress columns to `chat_spaces` on
+    pre-column deploys. Idempotent.
+    """
     inspector = inspect(engine)
     if "chat_spaces" not in inspector.get_table_names():
         return
     cols = {c["name"] for c in inspector.get_columns("chat_spaces")}
-    if "posts_logged" in cols:
-        return
     with engine.begin() as conn:
-        conn.execute(text(
-            "ALTER TABLE chat_spaces ADD COLUMN posts_logged INTEGER"
-        ))
+        for column in ("posts_logged", "videos_required"):
+            if column not in cols:
+                conn.execute(text(
+                    f"ALTER TABLE chat_spaces ADD COLUMN {column} INTEGER"
+                ))
 
 
 def _migrate_chat_spaces_submission_links():
@@ -588,8 +591,15 @@ class ChatSpace(Base):
     # `videos.filter(v => v.hasLinks).length`, served as
     # `deliverables.actualVideos` — and we cache the number here so the chat
     # page can read it without an outbound call on its render path. NULL
-    # means "never asked"; see services/creator_next_step.py.
+    # means "never asked"; see services/creator_next_step.py. A successful
+    # lookup always sets it, so it doubles as "have we ever synced?".
     posts_logged = Column(Integer, nullable=True)
+
+    # How many videos this creator owes on this campaign
+    # (`deliverables.minVideos`). NULL means either never asked or no
+    # target set — with no target we can't know they owe another draft, so
+    # both cases stay quiet.
+    videos_required = Column(Integer, nullable=True)
 
     # active | approved (legacy, pre-campaign-long spaces) | archived
     status = Column(String(20), nullable=False, default="active")

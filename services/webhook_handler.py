@@ -458,7 +458,7 @@ class WebhookHandler:
             # here keeps the chat's render path off the network, and
             # corrects any space whose cached number predates the links
             # that just arrived.
-            submission_links.refresh_posts_logged(space)
+            submission_links.refresh_progress(space)
         except Exception as exc:
             logger.warning(
                 "Could not record post links in chat for @%s: %s", username, exc
