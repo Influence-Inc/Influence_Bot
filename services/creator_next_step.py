@@ -9,31 +9,35 @@ under a decision, the header status) renders the same `NextStep`, so the
 creator is never offered a menu of destinations and the UI can't drift
 out of step with itself.
 
-The states, in priority order:
+One video moves through a fixed pipeline — submit a draft, wait for the
+brand, revise if asked, post it once approved, share the links — and the
+campaign repeats that until the deliverables are met. The question is
+never "how much is left overall", it is "whose move is it, now", answered
+in order, first match wins:
 
   ``resubmit_draft``  The newest draft came back with changes requested.
-                      The ball is squarely with the creator.
-  ``submit_posts``    A draft was approved and its live post links haven't
-                      landed yet. Nothing else can happen until they do.
-  ``submit_draft``    The campaign still wants a video that nothing in
-                      flight will produce — either the creator has sent
-                      nothing at all, or they've finished a deliverable
-                      and the next one is theirs to start.
-  *(nothing)*         A draft is sitting with the brand and nothing more
-                      is owed, or the space is archived. Rendering nothing
-                      is a real outcome, not a failure.
+  ``submit_posts``    Fewer videos are live than have been approved, so an
+                      approved draft is still waiting to go up.
+  *(nothing)*         A draft is under review. Whatever the campaign still
+                      wants, the creator cannot act until the brand comes
+                      back.
+  ``submit_draft``    Nothing is in flight and the campaign still wants a
+                      video — either the creator has sent nothing at all,
+                      or everything they sent is approved and posted.
+  *(nothing)*         Everything sent is done and nothing more is owed, or
+                      the space is archived.
 
-Priority matters on campaigns with several deliverables, where a creator
-can owe a revision on draft 3 while draft 1 is approved and unposted.
-Whatever the brand is waiting on wins; the other state is mentioned in
-the detail line, never as a second button. That rule is what stops this
-becoming a permanent toolbar.
+The order is the whole design. An earlier version asked whether the
+campaign's video target had been met, counting drafts under review towards
+it, and so asked a creator to start their second draft while their first
+was still sitting unapproved with the brand — work they might have to
+throw away. Wanting more videos eventually is not the same as it being
+the creator's move, and only the pipeline position can tell them apart.
 
-Finishing one deliverable is not finishing the campaign. A creator whose
-first video is approved and posted, with two more still owed, is looking
-at an empty chat unless the next draft is asked for — so `submit_draft`
-is counted against what the campaign wants, not just against whether
-anything has ever been sent.
+Because anything unfinished matches an earlier branch, the deliverable
+check at the end needs no accounting: by then every draft the creator has
+sent is approved and posted, so the only question left is whether the
+campaign wants another.
 
 Which drafts exist and what the brand decided is ours to know, and read
 locally. Whether the creator has already posted is not: the campaigns
@@ -49,13 +53,11 @@ the step was never going to arrive. Counting a fact we don't own was the
 mistake; the notices are still written, but they're a floor for when the
 API can't be reached, not the ledger.
 
-Which approval a given post fulfils is not recorded anywhere: `videos[]`
-and `reviews[]` on the campaigns site share no field, so a post cannot be
-traced back to the draft it came from. Approvals are matched to postings
-by order instead — see `_unanswered_approval`. That is enough to stop a
-video which skipped review from cancelling out an approval that still
-owes its links, but it is an approximation, and a genuine pairing would
-have to start with a link between the two on the campaigns site.
+Approvals and postings are compared as counts, not paired off. Nothing
+records which approval a given post fulfils — `videos[]` and `reviews[]`
+on the campaigns site share no field — so any pairing would be a guess
+dressed up as bookkeeping. Fewer videos live than drafts approved means
+one is still waiting to go up, and that is all this needs to know.
 
 A URL we can't resolve means no step at all, rather than a button that
 goes nowhere — the same rule the approval email follows.
@@ -139,106 +141,6 @@ def _drafts_for_space(db, space: ChatSpace) -> list[ReviewSubmission]:
         query = query.filter(ReviewSubmission.campaign_name == space.campaign_name)
     rows = query.order_by(ReviewSubmission.id.asc()).all()
     return [r for r in rows if not r.ignored]
-
-
-def _decision_event_ids(db, chat_space_id: int) -> dict:
-    """`{review_id: message id}` for the approval notices in this space."""
-    from services import chat_service
-
-    rows = (
-        db.query(ChatMessage.review_id, func.max(ChatMessage.id))
-        .filter(
-            ChatMessage.chat_space_id == chat_space_id,
-            ChatMessage.kind == chat_service.KIND_REVIEW_DECISION,
-            ChatMessage.review_id.isnot(None),
-        )
-        .group_by(ChatMessage.review_id)
-        .all()
-    )
-    return {int(review_id): int(msg_id) for review_id, msg_id in rows}
-
-
-def _posting_event_ids(db, chat_space_id: int) -> list:
-    """Ids of this space's post-links notices, oldest first."""
-    from services import chat_service
-
-    rows = (
-        db.query(ChatMessage.id)
-        .filter(
-            ChatMessage.chat_space_id == chat_space_id,
-            ChatMessage.kind == chat_service.KIND_POSTS_SUBMITTED,
-        )
-        .order_by(ChatMessage.id.asc())
-        .all()
-    )
-    return [int(r[0]) for r in rows]
-
-
-def _unanswered_approval(db, space: ChatSpace, approved, posts_logged: int):
-    """
-    The oldest approved draft whose live post links we're still waiting on.
-
-    Bare totals can't answer this. A creator who posts a video whose draft
-    never went through the review page inflates the posted count, and that
-    extra post silently cancels out an approved draft that genuinely still
-    owes its links.
-
-    Nothing in the data pairs a post with the approval it fulfils —
-    `videos[]` and `reviews[]` on the campaigns site share no field — so
-    this uses the next best thing we do own: order. A post-links notice can
-    only answer an approval that came *before* it, and each notice answers
-    at most one. An approval with nothing recorded after it is outstanding
-    however high the global total climbs.
-
-    Order only reaches back as far as the notices do. For approvals decided
-    before this space recorded its first one there is no per-post evidence
-    at all, and the campaigns site's total is the only thing to go on —
-    which is what keeps spaces that predate the notices from being asked
-    for links they gave long ago.
-    """
-    if not approved:
-        return None
-
-    decision_ids = _decision_event_ids(db, space.id)
-    postings = _posting_event_ids(db, space.id)
-
-    # Walk the approvals oldest first, letting each consume the earliest
-    # notice recorded after it that no earlier approval has taken.
-    used = 0
-    unanswered = []
-    for approval in approved:
-        decided_at = decision_ids.get(approval.id)
-        if decided_at is not None:
-            while used < len(postings) and postings[used] < decided_at:
-                used += 1
-        if used < len(postings):
-            used += 1
-        else:
-            unanswered.append(approval)
-
-    if not unanswered:
-        return None
-
-    first_posting = postings[0] if postings else None
-    for approval in unanswered:
-        decided_at = decision_ids.get(approval.id)
-        modern = (
-            first_posting is not None
-            and decided_at is not None
-            and decided_at > first_posting
-        )
-        if modern:
-            # Recorded evidence covers this one, and none of it answers it.
-            return approval
-
-    # Only pre-notice approvals are left, and the site's own total is all we
-    # have for them. It says how many are posted but not which, so assume
-    # the oldest went up first — the order creators actually work in.
-    answered_by_notices = len(approved) - len(unanswered)
-    covered = max(0, posts_logged - answered_by_notices)
-    if covered >= len(unanswered):
-        return None
-    return unanswered[covered]
 
 
 def _event_count(db, *, chat_space_id: int, kind: str) -> int:
@@ -340,39 +242,18 @@ def _posts_logged(db, space: ChatSpace, *, needed: int) -> int:
     return max(count, local)
 
 
-def _owes_another_draft(
-    *,
-    drafts,
-    approved_count: int,
-    posts_logged: int,
-    videos_required: Optional[int],
-) -> bool:
-    """
-    Does the creator still owe a draft the campaign hasn't seen?
-
-    Counted against what the campaign asks for: everything already posted,
-    plus everything on its way there — drafts sitting with the brand, and
-    approved drafts whose links haven't landed yet. Falling short of
-    `videos_required` means one more still has to be made.
-
-    Without a target (`minVideos` unset) there is no shortfall to measure,
-    so the honest answer is no. Better to say nothing than to invent a
-    deliverable the campaign never asked for.
-    """
-    if not videos_required:
-        return False
-    with_the_brand = sum(1 for d in drafts if d.decision is None)
-    approved_unposted = max(0, approved_count - posts_logged)
-    accounted = posts_logged + with_the_brand + approved_unposted
-    return accounted < videos_required
-
-
 def resolve(space: ChatSpace) -> Optional[NextStep]:
     """
     The creator's open action on this chat space, or None.
 
-    Pure read: never posts, never mutates anything but the cached
-    submission-link columns (via `submission_links.for_space`).
+    One video moves through a fixed pipeline: submit a draft, wait for the
+    brand, revise if asked, post it once approved, share the links. The
+    campaign repeats that until the deliverables are met. So the question
+    is never "how much is left overall" but "whose move is it, now" —
+    answered in order, first match wins.
+
+    Pure read: never posts, never mutates anything but the cached columns
+    on the space.
     """
     if space is None or space.status == "archived":
         return None
@@ -382,15 +263,9 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
         drafts = _drafts_for_space(db, space)
         latest = drafts[-1] if drafts else None
         approved = [d for d in drafts if d.decision == APPROVED]
+        with_the_brand = [d for d in drafts if d.decision is None]
         posts_logged, videos_required = _progress(
             db, space, approved_count=len(approved)
-        )
-        awaiting_posts = _unanswered_approval(db, space, approved, posts_logged)
-        owes_another = _owes_another_draft(
-            drafts=drafts,
-            approved_count=len(approved),
-            posts_logged=posts_logged,
-            videos_required=videos_required,
         )
     except Exception as exc:
         # A next step is a convenience on top of the conversation. If we
@@ -403,6 +278,7 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
         db.close()
 
     if latest is not None and latest.decision == CHANGES_REQUESTED:
+        # The brand sent the newest draft back.
         step = NextStep(
             key=KEY_RESUBMIT_DRAFT,
             label="Send your revised draft",
@@ -410,14 +286,24 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
             route=_ROUTE_FOR_KEY[KEY_RESUBMIT_DRAFT],
             review_id=latest.id,
         )
-    elif awaiting_posts is not None:
+    elif len(approved) > posts_logged:
+        # A draft has been approved and fewer videos are live than have
+        # been approved, so one of them is still waiting to go up. This
+        # outranks a draft sitting with the brand: posting an approved
+        # video is the creator's to do either way.
         step = NextStep(
             key=KEY_SUBMIT_POSTS,
             label="Add your live post links",
             detail="Approved — share the links once it's up",
             route=_ROUTE_FOR_KEY[KEY_SUBMIT_POSTS],
-            review_id=awaiting_posts.id,
+            review_id=approved[-1].id,
         )
+    elif with_the_brand:
+        # A draft is under review. Whatever the campaign still wants, the
+        # creator cannot act until the brand comes back — asking for the
+        # next draft here is asking them to work ahead of a decision that
+        # might send this one back.
+        return None
     elif not drafts:
         step = NextStep(
             key=KEY_SUBMIT_DRAFT,
@@ -425,7 +311,11 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
             detail="Nothing is with the brand yet",
             route=_ROUTE_FOR_KEY[KEY_SUBMIT_DRAFT],
         )
-    elif owes_another:
+    elif videos_required and posts_logged < videos_required:
+        # Nothing is in flight — every draft sent is approved and posted —
+        # and the campaign still wants a video. That one is theirs to
+        # start. No accounting is needed here: anything unfinished would
+        # have matched a branch above.
         step = NextStep(
             key=KEY_SUBMIT_DRAFT,
             label="Submit your next draft",
@@ -433,8 +323,7 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
             route=_ROUTE_FOR_KEY[KEY_SUBMIT_DRAFT],
         )
     else:
-        # A draft is with the brand, everything approved has been posted,
-        # and nothing is still owed. It isn't the creator's move.
+        # Everything sent is done and nothing more is owed.
         return None
 
     # Last gate: a step we can't send anyone to isn't a step.
