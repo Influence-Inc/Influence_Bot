@@ -15,10 +15,12 @@ The states, in priority order:
                       The ball is squarely with the creator.
   ``submit_posts``    A draft was approved and its live post links haven't
                       landed yet. Nothing else can happen until they do.
-  ``submit_draft``    Nothing is in play at all (every draft the creator
-                      sent was ignored by the INFLUENCE team).
-  *(nothing)*         A draft is sitting with the brand, everything is
-                      posted, or the space is archived. Rendering nothing
+  ``submit_draft``    The campaign still wants a video that nothing in
+                      flight will produce — either the creator has sent
+                      nothing at all, or they've finished a deliverable
+                      and the next one is theirs to start.
+  *(nothing)*         A draft is sitting with the brand and nothing more
+                      is owed, or the space is archived. Rendering nothing
                       is a real outcome, not a failure.
 
 Priority matters on campaigns with several deliverables, where a creator
@@ -26,6 +28,12 @@ can owe a revision on draft 3 while draft 1 is approved and unposted.
 Whatever the brand is waiting on wins; the other state is mentioned in
 the detail line, never as a second button. That rule is what stops this
 becoming a permanent toolbar.
+
+Finishing one deliverable is not finishing the campaign. A creator whose
+first video is approved and posted, with two more still owed, is looking
+at an empty chat unless the next draft is asked for — so `submit_draft`
+is counted against what the campaign wants, not just against whether
+anything has ever been sent.
 
 Which drafts exist and what the brand decided is ours to know, and read
 locally. Whether the creator has already posted is not: the campaigns
@@ -153,6 +161,27 @@ def _due_a_recheck(chat_space_id: int) -> bool:
     return True
 
 
+def _progress(db, space: ChatSpace, *, approved_count: int) -> tuple[int, Optional[int]]:
+    """
+    `(videos with links logged, videos the campaign requires)`.
+
+    Both come off the same creator record, so they're read together. See
+    `_posts_logged` for the caching rules; `videos_required` is
+    `deliverables.minVideos`, and None — no target set — is a real answer
+    that keeps us quiet rather than one to keep re-asking about.
+
+    Certainty is wanted up to whichever is larger, the approvals awaiting
+    links or the campaign's own target. Both can put a step on screen, so
+    a count good enough to settle one can still be too stale to settle the
+    other — which is how a creator who had posted everything was told
+    "2 of 3".
+    """
+    cached_required = getattr(space, "videos_required", None) or 0
+    posts = _posts_logged(db, space, needed=max(approved_count, cached_required))
+    # `_posts_logged` refreshes the target in place when it fetches.
+    return posts, getattr(space, "videos_required", None)
+
+
 def _posts_logged(db, space: ChatSpace, *, needed: int) -> int:
     """
     How many of this creator's videos on this campaign already have their
@@ -178,7 +207,11 @@ def _posts_logged(db, space: ChatSpace, *, needed: int) -> int:
     )
     cached = getattr(space, "posts_logged", None)
     known = local if cached is None else max(int(cached), local)
-    if known >= needed or not _due_a_recheck(space.id):
+    # A successful lookup always writes `posts_logged`, so NULL means we
+    # have never synced — and until we do we don't know what the campaign
+    # asks of this creator either.
+    synced = cached is not None
+    if (known >= needed and synced) or not _due_a_recheck(space.id):
         return known
 
     creator = submission_links.fetch_creator(
@@ -189,35 +222,41 @@ def _posts_logged(db, space: ChatSpace, *, needed: int) -> int:
         # Couldn't find out. Fall back to what we had rather than
         # inventing a number in either direction.
         return known
-    submission_links.remember_posts_logged(space.id, count)
+    required = submission_links.videos_required_from_payload(creator)
+    submission_links.remember_progress(space.id, count, required)
     try:
         space.posts_logged = count
+        space.videos_required = required
     except Exception:  # pragma: no cover - detached instance edge case
         pass
     return max(count, local)
 
 
-def _approval_awaiting_posts(db, space: ChatSpace, drafts) -> Optional[ReviewSubmission]:
+def _owes_another_draft(
+    *,
+    drafts,
+    approved_count: int,
+    posts_logged: int,
+    videos_required: Optional[int],
+) -> bool:
     """
-    The approved draft whose live post links we're still waiting on, if any.
+    Does the creator still owe a draft the campaign hasn't seen?
 
-    Counted, not paired: N approvals against M videos with links logged.
-    An earlier version compared the newest decision notice against the
-    newest posts notice, which couldn't express which approval had been
-    answered — any later decision, including a changes-requested on a
-    different draft, put the posts notice "behind" again and reopened a
-    step the creator had already done.
+    Counted against what the campaign asks for: everything already posted,
+    plus everything on its way there — drafts sitting with the brand, and
+    approved drafts whose links haven't landed yet. Falling short of
+    `videos_required` means one more still has to be made.
+
+    Without a target (`minVideos` unset) there is no shortfall to measure,
+    so the honest answer is no. Better to say nothing than to invent a
+    deliverable the campaign never asked for.
     """
-    approved = [d for d in drafts if d.decision == APPROVED]
-    if not approved:
-        return None
-
-    posts_logged = _posts_logged(db, space, needed=len(approved))
-    if posts_logged >= len(approved):
-        # Every approved draft is accounted for.
-        return None
-    # The oldest approval nothing has answered yet.
-    return approved[min(posts_logged, len(approved) - 1)]
+    if not videos_required:
+        return False
+    with_the_brand = sum(1 for d in drafts if d.decision is None)
+    approved_unposted = max(0, approved_count - posts_logged)
+    accounted = posts_logged + with_the_brand + approved_unposted
+    return accounted < videos_required
 
 
 def resolve(space: ChatSpace) -> Optional[NextStep]:
@@ -234,7 +273,21 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
     try:
         drafts = _drafts_for_space(db, space)
         latest = drafts[-1] if drafts else None
-        awaiting_posts = _approval_awaiting_posts(db, space, drafts)
+        approved = [d for d in drafts if d.decision == APPROVED]
+        posts_logged, videos_required = _progress(
+            db, space, approved_count=len(approved)
+        )
+        awaiting_posts = (
+            approved[min(posts_logged, len(approved) - 1)]
+            if approved and posts_logged < len(approved)
+            else None
+        )
+        owes_another = _owes_another_draft(
+            drafts=drafts,
+            approved_count=len(approved),
+            posts_logged=posts_logged,
+            videos_required=videos_required,
+        )
     except Exception as exc:
         # A next step is a convenience on top of the conversation. If we
         # can't work one out, the chat still has to render.
@@ -268,9 +321,16 @@ def resolve(space: ChatSpace) -> Optional[NextStep]:
             detail="Nothing is with the brand yet",
             route=_ROUTE_FOR_KEY[KEY_SUBMIT_DRAFT],
         )
+    elif owes_another:
+        step = NextStep(
+            key=KEY_SUBMIT_DRAFT,
+            label="Submit your next draft",
+            detail=f"{posts_logged} of {videos_required} videos posted",
+            route=_ROUTE_FOR_KEY[KEY_SUBMIT_DRAFT],
+        )
     else:
-        # A draft is with the brand and everything approved has been
-        # posted. It isn't the creator's move.
+        # A draft is with the brand, everything approved has been posted,
+        # and nothing is still owed. It isn't the creator's move.
         return None
 
     # Last gate: a step we can't send anyone to isn't a step.
