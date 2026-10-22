@@ -25,6 +25,7 @@ Routes:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import time
 from datetime import datetime, timezone
@@ -130,7 +131,8 @@ def _safe_next(raw: str | None) -> str | None:
     """Only allow same-site absolute paths as a post-login redirect target, so
     the `next` param can't be used as an open redirect."""
     raw = (raw or "").strip()
-    if raw.startswith("/") and not raw.startswith("//"):
+    # Browsers treat "\\" like "/", so "/\\evil.com" is protocol-relative too.
+    if raw.startswith("/") and not raw.startswith("//") and "\\" not in raw:
         return raw
     return None
 
@@ -882,7 +884,7 @@ def admin_chats_login():
             error="CHAT_ADMIN_TOKEN is not configured on the server.",
             status=503,
         )
-    if not token or token != expected:
+    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
         return _login_response(next_url=next_url, error="Invalid token.", status=401)
     cookie_value = _admin_serializer().dumps({"a": 1, "iat": int(time.time())})
     resp = make_response("", 302, {"Location": next_url or "/admin/chats"})
@@ -928,8 +930,9 @@ def admin_chat_archive(space_id: int):
         return jsonify({"error": "forbidden"}), 403
     ok = archive_space(space_id)
     # Form posts (from the admin UI) get a redirect; JSON callers get JSON.
-    if request.form.get("redirect"):
-        return make_response("", 302, {"Location": request.form.get("redirect")})
+    redirect_to = _safe_next(request.form.get("redirect"))
+    if redirect_to:
+        return make_response("", 302, {"Location": redirect_to})
     return jsonify({"ok": ok})
 
 
@@ -938,8 +941,9 @@ def admin_chat_reopen(space_id: int):
     if not _is_admin():
         return jsonify({"error": "forbidden"}), 403
     ok = chat_service.reopen_space(space_id)
-    if request.form.get("redirect"):
-        return make_response("", 302, {"Location": request.form.get("redirect")})
+    redirect_to = _safe_next(request.form.get("redirect"))
+    if redirect_to:
+        return make_response("", 302, {"Location": redirect_to})
     return jsonify({"ok": ok})
 
 
@@ -971,8 +975,9 @@ def admin_chat_post_message(space_id: int):
         notify_new_message(chat_space_id=space_id, sender_party="admin", message_id=msg.id)
     except Exception as exc:
         logger.warning("admin message notification failed: %s", exc)
-    if request.form.get("redirect"):
-        return make_response("", 302, {"Location": request.form.get("redirect")})
+    redirect_to = _safe_next(request.form.get("redirect"))
+    if redirect_to:
+        return make_response("", 302, {"Location": redirect_to})
     return jsonify({"ok": True, "id": msg.id})
 
 

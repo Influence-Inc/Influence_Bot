@@ -16,6 +16,7 @@ ReelStats API: configured via REELSTATS_API_URL env var
 """
 
 import atexit
+import hmac
 import logging
 
 from flask import Flask, request, jsonify, render_template_string
@@ -96,6 +97,18 @@ register_actions(bolt_app)
 # ---------------------------------------------------------------------------
 flask_app = Flask(__name__)
 handler = SlackRequestHandler(bolt_app)
+
+
+@flask_app.after_request
+def _security_headers(resp):
+    # nosniff matters most for /chat/attachment: a file is served under the
+    # type it was uploaded with, never re-interpreted as HTML by the browser.
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.is_secure or request.headers.get("X-Forwarded-Proto", "").startswith("https"):
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
 
 # Creator <-> brand chat space routes.
 register_chat_routes(flask_app)
@@ -293,7 +306,21 @@ def reelstats_webhook():
     """
     Receive webhook events from the ReelStats server.
     Events: review_submitted, video_links_submitted
+
+    Authenticated with the shared BOT_TOKEN in `x-bot-token` (the same secret
+    this bot sends to ReelStats). Without it anyone who learned the URL could
+    make the bot post fabricated events into brand Slack channels. A refused
+    webhook is not lost: the poller picks the same event up.
     """
+    expected = Config.BOT_TOKEN
+    if not expected:
+        logger.error("Refusing /webhook: BOT_TOKEN is not set")
+        return jsonify({"error": "BOT_TOKEN not configured"}), 503
+    presented = request.headers.get("x-bot-token") or ""
+    if not hmac.compare_digest(presented.encode(), expected.encode()):
+        logger.warning("Refusing /webhook: missing or wrong x-bot-token")
+        return jsonify({"error": "unauthorized"}), 401
+
     payload = request.get_json(silent=True)
     if not payload:
         logger.warning("Received webhook with no JSON payload")
