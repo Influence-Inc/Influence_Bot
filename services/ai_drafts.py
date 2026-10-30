@@ -28,6 +28,7 @@ import re
 
 from config import Config
 from services import chat_service
+from utils import claude_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -362,12 +363,14 @@ def draft_replies(
             output_config={"effort": Config.CLAUDE_EFFORT, "format": _OUTPUT_SCHEMA},
         )
     except anthropic.AuthenticationError as exc:
+        claude_alerts.report(exc)
         logger.warning("AI draft auth failed for space %s: %s", chat_space_id, exc)
         raise DraftError("auth", "The Anthropic API key was rejected.") from exc
     except anthropic.RateLimitError as exc:
         logger.warning("AI draft rate limited for space %s: %s", chat_space_id, exc)
         raise DraftError("rate_limited", "Claude is rate limited. Try again shortly.") from exc
     except anthropic.APIStatusError as exc:
+        claude_alerts.report(exc)
         logger.warning(
             "AI draft request failed for space %s (%s): %s",
             chat_space_id, exc.status_code, exc,
