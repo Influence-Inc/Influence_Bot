@@ -51,6 +51,7 @@ import requests
 
 from config import Config
 from models.models import ChaseReplyAddress, SessionLocal
+from utils import claude_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +427,7 @@ def interpret(reply: InboundReply, *, today: Optional[date] = None) -> Optional[
             output_config={"effort": "low", "format": _INTERPRET_SCHEMA},
         )
     except Exception as exc:
+        claude_alerts.report(exc)
         logger.warning("Could not read reply %s: %s", reply.email_id, exc)
         return None
 

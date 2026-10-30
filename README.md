@@ -118,6 +118,7 @@ Required environment variables:
 
 Optional:
 - `ANTHROPIC_API_KEY` — enables the ✨ AI-draft button in the admin chat composer (see below); unset leaves the feature off
+- `ALERTS_SLACK_WEBHOOK_URL` — optional: a Slack incoming webhook for the alerts channel. When a Claude call fails because the Anthropic Console account is out of credits (or hit its usage limit) or the key is rejected, the bot posts there once, then every 3 hours while it lasts (`utils/claude_alerts.py`). The creator-list worker and the outreach backend use the same variable and channel
 - `OUTREACH_API_BASE` + `OUTREACH_BOT_TOKEN` — the outreach service's base URL and its `OUTREACH_BOT_TOKEN`. Set both to send creators their campaign updates on WhatsApp (see **Campaign updates to creators on WhatsApp** below); with either unset the bot's Slack and email notifications behave exactly as before and no WhatsApp copy is sent
 
 ### 3. Create Slack App
